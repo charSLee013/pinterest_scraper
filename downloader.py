@@ -386,10 +386,8 @@ def download_images_with_cache(
 
     # 设置并发数
     if max_workers <= 0:
-        # 使用配置的并发数，或默认值
-        max_workers = min(
-            config.MAX_THREAD_COUNT, os.cpu_count() * 2 or config.DEFAULT_THREAD_COUNT
-        )
+        # 自动设置为CPU核心数的2倍或8，取小值，避免请求过多被封
+        max_workers = min(16, os.cpu_count() * 2)
 
     logger.debug(f"使用 {max_workers} 个线程并发下载")
 
