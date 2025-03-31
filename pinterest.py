@@ -32,7 +32,7 @@ class PinterestScraper:
         download_images: bool = True,
         viewport_width: int = 1920,
         viewport_height: int = 1080,
-        zoom_level: int = 30,
+        zoom_level: int = 76,
     ):
         """初始化Pinterest爬虫
 
@@ -125,24 +125,74 @@ class PinterestScraper:
                 logger.error("浏览器启动失败")
                 return []
 
-            # 构建搜索URL并访问
+            # 构建搜索URL并访问 - 添加重试机制
             search_url = config.PINTEREST_SEARCH_URL.format(
                 query=query.replace(" ", "+")
             )
-            if not self.browser.get_url(search_url):
-                logger.error(f"访问搜索URL失败: {search_url}")
-                return []
 
-            # 等待页面加载
+            # 重试机制
+            max_retries = 3
+            retry_count = 0
+            success = False
+
+            while retry_count < max_retries and not success:
+                try:
+                    retry_count += 1
+                    logger.info(
+                        f"尝试访问搜索URL (尝试 {retry_count}/{max_retries}): {search_url}"
+                    )
+
+                    # 尝试访问URL，增加超时容忍度
+                    if not self.browser.get_url(search_url):
+                        if retry_count < max_retries:
+                            logger.warning(
+                                f"访问失败，将在 {retry_count * 2} 秒后重试..."
+                            )
+                            time.sleep(retry_count * 2)  # 渐进式增加等待时间
+
+                            # 如果是超时问题，可能需要重启浏览器
+                            if retry_count > 1:
+                                logger.info("重启浏览器...")
+                                self.browser.stop()
+                                time.sleep(1)
+                                if not self.browser.start():
+                                    logger.error("浏览器重启失败")
+                                    return []
+                        else:
+                            logger.error(f"访问搜索URL失败: {search_url}")
+                            return []
+                    else:
+                        success = True
+                        logger.info("成功访问搜索URL")
+                except Exception as e:
+                    logger.error(f"访问URL时发生异常: {e}")
+                    if retry_count < max_retries:
+                        logger.warning(f"将在 {retry_count * 2} 秒后重试...")
+                        time.sleep(retry_count * 2)
+                    else:
+                        raise
+
+            # 等待页面加载 - 增加更灵活的等待策略
             logger.debug("等待搜索结果加载")
-            for selector in config.PINTEREST_PIN_SELECTORS:
-                if self.browser.wait_for_element(selector, timeout=5):
-                    logger.debug(f"找到匹配的pin元素: {selector}")
+            load_success = False
+
+            # 使用更长的超时和多个选择器提高成功率
+            for wait_time in [5, 8, 10]:  # 逐步增加等待时间
+                for selector in config.PINTEREST_PIN_SELECTORS:
+                    if self.browser.wait_for_element(selector, timeout=wait_time):
+                        logger.debug(f"找到匹配的pin元素: {selector}")
+                        load_success = True
+                        break
+
+                if load_success:
                     break
-            else:
+
+                logger.warning(f"等待 {wait_time} 秒后仍未找到元素，继续尝试...")
+
+            if not load_success:
                 logger.warning("未找到pin元素，但仍将继续尝试提取")
 
-            # 保存调试截图
+                # 保存调试截图
             if self.debug:
                 screenshot_path = os.path.join(
                     self.dirs["debug_screenshots"],
@@ -167,27 +217,26 @@ class PinterestScraper:
                     network_data = self.browser.get_network_requests()
                     utils.save_json(network_data, requests_path)
 
-            # 执行滚动并提取数据的函数
+            # 执行滚动并提取数据
             def extract_pins_from_page(html):
                 return parser.extract_pins_from_html(html)
 
-            # 使用简化的滚动方法和处理HTML的函数
+            # 使用更高的最大滚动尝试次数以获取更多图片
             pins = self.browser.simple_scroll_and_extract(
                 target_count=count,
                 extract_func=extract_pins_from_page,
-                max_scroll_attempts=30,
+                max_scroll_attempts=100,  # 增加到100次以获取更多内容
             )
 
             # 保存结果
-            # 添加日期到文件名
+            # 获取当前日期
             current_date = datetime.now().strftime("%Y-%m-%d")
             output_path = os.path.join(
-                self.dirs["json"],
-                f"pinterest_search_{safe_term}_{current_date}.json",
+                self.dirs["json"], f"pinterest_search_{safe_term}_{current_date}.json"
             )
             utils.save_json(pins, output_path)
 
-            # 下载图片(如果需要)
+            # 下载图片
             if self.download_images and pins:
                 pins = downloader.download_images_with_cache(
                     pins,

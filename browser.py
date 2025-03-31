@@ -7,6 +7,7 @@ Pinterest爬虫的浏览器操作模块
 
 import json
 import platform
+import random
 import time
 from typing import Dict, List, Optional
 
@@ -32,7 +33,7 @@ class Browser:
         timeout: int = config.DEFAULT_TIMEOUT,
         viewport_width: int = 1920,
         viewport_height: int = 1080,
-        zoom_level: int = 30,  # 30% 的缩放级别，值越小缩放越大
+        zoom_level: int = 76,  # 30% 的缩放级别，值越小缩放越大
     ):
         """初始化浏览器
 
@@ -358,15 +359,17 @@ class Browser:
         # 初始化数据收集
         results = []
         scroll_count = 0
-        last_height = 0
         no_change_count = 0
+        consecutive_empty_results = 0
+        scroll_position = 0
+        consecutive_no_new_data = 0  # 连续几次没有新数据的计数
+        last_result_count = 0  # 上次的结果数量
 
         # 使用集合存储已处理的项目ID，避免重复
         processed_ids = set()
 
         # 优化滚动速度，使用较大的滚动步长
         scroll_step = int(self.viewport_height * 0.8)  # 80%的视口高度
-        consecutive_empty = 0  # 连续空结果计数
 
         while len(results) < target_count and scroll_count < max_scroll_attempts:
             # 增加滚动计数
@@ -377,128 +380,138 @@ class Browser:
 
             # 输出调试信息
             logger.debug(
-                f"滚动 #{scroll_count}, 当前高度: {current_height}px, 已收集: {len(results)}"
+                f"滚动 #{scroll_count}, 当前高度: {current_height}px, 已收集: {len(results)}, 滚动位置: {scroll_position}/{current_height}"
             )
 
             # 提取当前页面上的数据
             page_source = self.get_page_source()
             new_items = extract_func(page_source)
 
-            # 计算新添加的项目数
-            prev_count = len(results)
+            # 记录当前结果数
+            current_result_count = len(results)
 
             # 过滤并添加新项目
+            new_added = 0
             for item in new_items:
                 item_id = item.get("id", "")
                 if item_id and item_id not in processed_ids:
                     processed_ids.add(item_id)
                     results.append(item)
+                    new_added += 1
 
                     # 如果收集足够数量，提前退出
                     if len(results) >= target_count:
                         break
 
-            # 检查是否有新增内容
-            new_added = len(results) - prev_count
+            logger.debug(f"这次滚动添加了 {new_added} 个新项目")
+
+            # 检查是否有新的项目被添加
             if new_added == 0:
-                consecutive_empty += 1
-                logger.debug(f"连续 {consecutive_empty} 次滚动未添加新内容")
+                consecutive_no_new_data += 1
+                logger.debug(f"连续 {consecutive_no_new_data} 次滚动未获取新数据")
             else:
-                consecutive_empty = 0
-                logger.debug(f"本次滚动添加了 {new_added} 个新项目")
+                consecutive_no_new_data = 0
+                logger.debug("重置连续无新数据计数")
 
             # 如果已找到足够数量，结束
             if len(results) >= target_count:
                 logger.info(f"已收集到足够数量: {len(results)}/{target_count}")
                 break
 
-            # 滚动策略调整：连续多次没有新内容时尝试不同的滚动方式
-            if consecutive_empty >= 3:
-                # 尝试不同的滚动策略
+            # 如果连续多次没有新数据，尝试不同的加载策略
+            if consecutive_no_new_data >= 4:
                 logger.warning(
-                    f"连续 {consecutive_empty} 次未获取到新内容，尝试不同滚动策略"
+                    f"连续 {consecutive_no_new_data} 次未获取到新数据，尝试特殊滚动策略"
                 )
 
-                if consecutive_empty == 3:
-                    # 策略1: 滚动到顶部然后快速滚动到当前位置下方
-                    logger.debug("尝试滚动策略1: 回到顶部然后快速滚动")
-                    self.driver.execute_script("window.scrollTo(0, 0);")
+                if consecutive_no_new_data == 4:
+                    # 策略1: 快速向上滚动一段距离再向下滚动，触发新的加载
+                    logger.debug("策略1: 向上滚动后再向下")
+                    up_scroll = min(int(self.viewport_height * 1.5), scroll_position)
+                    self.driver.execute_script(f"window.scrollBy(0, -{up_scroll});")
                     time.sleep(1)
-                    current_pos = current_height + scroll_step
-                    self.driver.execute_script(f"window.scrollTo(0, {current_pos});")
-                    time.sleep(2)
-
-                elif consecutive_empty == 4:
-                    # 策略2: 刷新页面然后快速滚动
-                    logger.debug("尝试滚动策略2: 刷新页面并快速滚动")
-                    current_url = self.driver.current_url
-                    self.driver.get(current_url)
-                    time.sleep(3)
-
-                    # 快速滚动到半路
-                    half_height = current_height / 2
-                    for pos in range(0, int(half_height), scroll_step):
-                        self.driver.execute_script(f"window.scrollTo(0, {pos});")
-                        time.sleep(0.2)
-
-                    # 应用缩放
-                    self.apply_zoom()
-
-                elif consecutive_empty >= 5:
-                    # 策略3: 随机滚动
-                    import random
-
-                    rand_scroll = random.randint(
-                        int(scroll_step * 0.5), int(scroll_step * 1.5)
+                    self.driver.execute_script(
+                        f"window.scrollBy(0, {up_scroll + 300});"
                     )
-                    logger.debug(f"尝试滚动策略3: 随机滚动 {rand_scroll}px")
-                    self.driver.execute_script(f"window.scrollBy(0, {rand_scroll});")
                     time.sleep(1.5)
 
-                if consecutive_empty > 8:
-                    logger.warning("多次尝试后仍无法获取新内容，停止滚动")
+                elif consecutive_no_new_data == 5:
+                    # 策略2: 跳到页面底部然后回到当前位置
+                    logger.debug("策略2: 跳到页面底部再回来")
+                    current_pos = scroll_position
+                    self.driver.execute_script(
+                        "window.scrollTo(0, document.body.scrollHeight);"
+                    )
+                    time.sleep(2)
+                    self.driver.execute_script(f"window.scrollTo(0, {current_pos});")
+                    time.sleep(1)
+                elif consecutive_no_new_data == 6:
+                    # 策略3: 刷新页面，重新开始
+                    logger.debug("策略3: 刷新页面")
+                    current_url = self.driver.current_url
+                    self.driver.refresh()
+                    time.sleep(3)
+                    # 快速滚动到当前位置
+                    # Convert scroll_position to int to avoid TypeError
+                    scroll_position_int = int(scroll_position)
+                    for pos in range(0, scroll_position_int, scroll_step):
+                        self.driver.execute_script(f"window.scrollTo(0, {pos});")
+                        time.sleep(0.1)
+                    time.sleep(1)
+
+                elif consecutive_no_new_data > 8:
+                    logger.warning(
+                        f"多次尝试后仍无法获取新数据，当前已收集 {len(results)} 项，停止滚动"
+                    )
                     break
-            else:
-                # 执行常规滚动，使用定制的滚动步长
-                self.scroll_by(scroll_step)
+
+                # 不立即继续常规滚动
+                continue
+
+            # 执行滚动
+            self.scroll_by(scroll_step)
+            scroll_position = self.driver.execute_script("return window.pageYOffset;")
 
             # 等待加载
             time.sleep(config.SCROLL_PAUSE_TIME)
 
-            # 检查高度变化
+            # 检查高度变化 - 仅作为参考，不作为主要决策依据
             new_height = self.get_page_height()
             if new_height == current_height:
                 no_change_count += 1
                 if no_change_count >= 3:
-                    logger.warning("页面高度停止变化，可能已到底部或加载停滞")
+                    logger.debug("页面高度停止变化，但继续检查是否有新内容")
 
-                    # 尝试通过JavaScript执行特殊操作来触发加载
-                    if no_change_count == 3:
-                        logger.debug("尝试强制触发加载更多内容")
-                        self.driver.execute_script("""
-                            window.scrollTo(0, 0);
-                            setTimeout(() => window.scrollTo(0, document.body.scrollHeight), 1000);
-                        """)
-                        time.sleep(2)
+                    # 仍然尝试滚动触发加载，但不强制终止
+                    if no_change_count % 3 == 0:
+                        # 尝试滚动到顶部再回来以触发加载
+                        random_offset = random.randint(100, 300)
+                        logger.debug(
+                            f"尝试滚动触发：当前位置 {scroll_position} ± {random_offset}"
+                        )
 
-                    # 额外尝试：模拟鼠标滚轮事件
-                    elif no_change_count == 4:
-                        logger.debug("尝试模拟鼠标滚轮事件")
-                        self.driver.execute_script("""
-                            window.dispatchEvent(new WheelEvent('wheel', {
-                                deltaY: 100,
-                                bubbles: true
-                            }));
-                        """)
-                        time.sleep(1.5)
-
-                    # 如果尝试多次后仍无新内容，退出循环
-                    if no_change_count > 6:
-                        logger.warning("无法加载更多内容，停止滚动")
-                        break
+                        # 随机向上或向下稍微滚动一点以触发新加载
+                        if random.random() > 0.5:
+                            self.driver.execute_script(
+                                f"window.scrollBy(0, {random_offset});"
+                            )
+                        else:
+                            self.driver.execute_script(
+                                f"window.scrollBy(0, -{random_offset});"
+                            )
+                        time.sleep(0.5)
+                        # 回到原位置
+                        self.driver.execute_script(
+                            f"window.scrollTo(0, {scroll_position});"
+                        )
+                        time.sleep(0.5)
             else:
                 # 高度有变化，重置计数
                 no_change_count = 0
+                logger.debug(f"页面高度从 {current_height} 变为 {new_height}")
+
+            # 保存上次结果数量
+            last_result_count = len(results)
 
         # 返回收集的结果
         logger.info(f"滚动完成，共收集 {len(results)} 项")

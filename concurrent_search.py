@@ -13,7 +13,27 @@ from typing import Dict, List, Optional
 
 from loguru import logger
 
+import config
 from pinterest import PinterestScraper
+
+
+def setup_worker_logger():
+    """为子进程配置日志处理器"""
+    logger.remove()  # 移除所有处理器
+
+    # 添加标准错误输出
+    logger.add(sys.stderr, format=config.LOG_FORMAT, level="INFO", colorize=True)
+
+    # 添加文件输出
+    os.makedirs("logs", exist_ok=True)
+    log_filename = f"logs/worker_{os.getpid()}_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    logger.add(
+        log_filename,
+        format=config.LOG_FORMAT,
+        level="INFO",
+        rotation="10 MB",
+        compression="zip",
+    )
 
 
 def search_single_term(
@@ -42,6 +62,8 @@ def search_single_term(
         搜索结果列表
     """
     try:
+        # 为子进程设置日志
+
         # 为当前搜索词创建带有时间戳的日志
         log_suffix = time.strftime("%Y%m%d_%H%M%S")
         logger.info(f"开始处理搜索词: '{term}', 目标数量: {count}")

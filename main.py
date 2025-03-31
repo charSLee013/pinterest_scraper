@@ -119,7 +119,7 @@ def main():
     advanced_group.add_argument(
         "--zoom-level",
         type=int,
-        default=30,
+        default=76,
         help="设置浏览器页面缩放级别，百分比 (默认: 30%)",
     )
     advanced_group.add_argument(
