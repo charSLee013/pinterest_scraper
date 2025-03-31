@@ -52,16 +52,33 @@ def main():
     )
 
     # 输入源参数组(互斥)
-    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group = parser.add_mutually_exclusive_group()  # 移除required=True以允许默认值
     input_group.add_argument(
-        "-u", "--urls", nargs="+", help="要爬取的Pinterest URL列表"
+        "-u",
+        "--urls",
+        nargs="+",
+        help="要爬取的Pinterest URL列表",
     )
-    input_group.add_argument("-s", "--search", type=str, help="Pinterest搜索关键词")
     input_group.add_argument(
-        "-f", "--file", type=str, help="包含URL列表的文件路径，每行一个URL"
+        "-s",
+        "--search",
+        type=str,
+        help="Pinterest搜索关键词",
+        required=False,
     )
     input_group.add_argument(
-        "-m", "--multi-search", nargs="+", help="多个Pinterest搜索关键词，并发执行"
+        "-f",
+        "--file",
+        type=str,
+        help="包含URL列表的文件路径，每行一个URL",
+        required=False,
+    )
+    input_group.add_argument(
+        "-m",
+        "--multi-search",
+        nargs="+",
+        help="多个Pinterest搜索关键词，并发执行",
+        required=False,
     )
 
     # 常规参数
@@ -69,7 +86,7 @@ def main():
         "-c",
         "--count",
         type=int,
-        default=50,
+        default=5000,
         help="每个URL/关键词要下载的图片数量 (默认: 50)",
     )
     parser.add_argument(
@@ -86,14 +103,17 @@ def main():
         "--log-level",
         type=str,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        default="INFO",
+        default="DEBUG",
         help="日志级别 (默认: INFO)",
     )
     advanced_group.add_argument(
         "--no-images", action="store_true", help="仅获取元数据，不下载图片"
     )
     advanced_group.add_argument(
-        "--debug", action="store_true", help="启用调试模式，保存页面快照和网络请求"
+        "--debug",
+        action="store_true",
+        help="启用调试模式，保存页面快照和网络请求",
+        default=True,
     )
     advanced_group.add_argument(
         "--max-workers",
@@ -117,12 +137,6 @@ def main():
         help="设置浏览器视口高度 (默认: 1080)",
     )
     advanced_group.add_argument(
-        "--zoom-level",
-        type=int,
-        default=76,
-        help="设置浏览器页面缩放级别，百分比 (默认: 30%)",
-    )
-    advanced_group.add_argument(
         "--max-concurrent",
         type=int,
         default=3,
@@ -135,6 +149,14 @@ def main():
     setup_logger(args.log_level)
 
     try:
+        # 设置默认行为：如果没有指定任何输入源，默认使用URLs
+        if not any([args.search, args.file, args.multi_search, args.urls]):
+            args.urls = [
+                "https://www.pinterest.com/pin/3025924745198085/",
+                # "https://www.pinterest.com/pin/79305643433117636/",
+            ]
+            logger.info("未指定输入源，使用默认URL列表")
+
         # 获取URL列表
         urls = []
         if args.file:
@@ -155,7 +177,6 @@ def main():
             "max_workers": args.max_workers,
             "download_images": not args.no_images,
             "viewport": f"{args.viewport_width}x{args.viewport_height}",
-            "zoom_level": f"{args.zoom_level}%",
         }
         logger.info(f"爬虫配置: {json.dumps(config_info)}")
 

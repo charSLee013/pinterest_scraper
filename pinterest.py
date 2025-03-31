@@ -32,7 +32,6 @@ class PinterestScraper:
         download_images: bool = True,
         viewport_width: int = 1920,
         viewport_height: int = 1080,
-        zoom_level: int = 76,
     ):
         """初始化Pinterest爬虫
 
@@ -45,7 +44,6 @@ class PinterestScraper:
             download_images: 是否下载图片
             viewport_width: 浏览器视口宽度
             viewport_height: 浏览器视口高度
-            zoom_level: 页面缩放级别(百分比)
         """
         self.output_dir = output_dir
         self.proxy = proxy
@@ -55,7 +53,7 @@ class PinterestScraper:
         self.download_images = download_images
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
-        self.zoom_level = zoom_level
+        self.zoom_level = config.ZOOM_LEVEL
 
         # 创建主输出目录
         os.makedirs(output_dir, exist_ok=True)
@@ -66,12 +64,11 @@ class PinterestScraper:
             timeout=timeout,
             viewport_width=viewport_width,
             viewport_height=viewport_height,
-            zoom_level=zoom_level,
         )
 
         logger.info(
             f"Pinterest爬虫初始化完成。输出目录: {output_dir}, 调试模式: {debug}, 下载图片: {download_images}, "
-            f"视口: {viewport_width}x{viewport_height}, 缩放: {zoom_level}%"
+            f"视口: {viewport_width}x{viewport_height}, 缩放: {self.zoom_level}%"
         )
 
     def search(self, query: str, count: int = 50) -> List[Dict]:
@@ -225,7 +222,6 @@ class PinterestScraper:
             pins = self.browser.simple_scroll_and_extract(
                 target_count=count,
                 extract_func=extract_pins_from_page,
-                max_scroll_attempts=100,  # 增加到100次以获取更多内容
             )
 
             # 保存结果
@@ -316,6 +312,11 @@ class PinterestScraper:
                 logger.error("浏览器启动失败")
                 return []
 
+            # 启动浏览器监控
+            if hasattr(self.browser, "start_monitoring"):
+                self.browser.start_monitoring(url_term)
+                logger.info("浏览器监控已启动")
+
             # 访问URL
             if not self.browser.get_url(url):
                 logger.error(f"访问URL失败: {url}")
@@ -362,7 +363,6 @@ class PinterestScraper:
             pins = self.browser.simple_scroll_and_extract(
                 target_count=count,
                 extract_func=extract_pins_from_page,
-                max_scroll_attempts=30,
             )
 
             # 保存结果
@@ -397,7 +397,9 @@ class PinterestScraper:
             return []
 
         finally:
-            # 关闭浏览器
+            # 停止监控并关闭浏览器
+            if hasattr(self.browser, "stop_monitoring"):
+                self.browser.stop_monitoring()
             self.browser.stop()
 
     def scrape_urls(

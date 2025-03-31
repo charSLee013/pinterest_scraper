@@ -3,7 +3,7 @@
 
 """
 Pinterest多关键词并发搜索脚本
-此脚本直接从文件读取多个关键词并执行并发搜索
+此脚本可以从文件或文件夹读取多个关键词并执行并发搜索
 """
 
 import argparse
@@ -50,17 +50,47 @@ def read_terms_from_file(filepath: str) -> List[str]:
         return []
 
 
+def read_terms_from_directory(directory_path: str) -> List[str]:
+    """从目录中的所有文件读取搜索关键词"""
+    all_terms = []
+    try:
+        if not os.path.isdir(directory_path):
+            logger.error(f"指定的路径不是一个目录: {directory_path}")
+            return []
+
+        file_count = 0
+        for filename in os.listdir(directory_path):
+            filepath = os.path.join(directory_path, filename)
+            if os.path.isfile(filepath):
+                file_terms = read_terms_from_file(filepath)
+                all_terms.extend(file_terms)
+                file_count += 1
+                logger.debug(f"从文件 {filename} 读取了 {len(file_terms)} 个关键词")
+
+        logger.info(f"从 {file_count} 个文件中读取了关键词")
+        return all_terms
+    except Exception as e:
+        logger.error(f"读取目录中的关键词文件失败: {e}")
+        return []
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description="Pinterest多关键词并发搜索工具")
 
-    # 必选参数
-    parser.add_argument(
+    # 必选参数组 (文件或目录)
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
         "-f",
         "--file",
         type=str,
-        required=True,
         help="包含搜索关键词的文件路径，每行一个关键词",
+    )
+    input_group.add_argument(
+        "-d",
+        "--directory",
+        type=str,
+        help="包含搜索关键词文件的目录路径，每个文件的每行都是一个关键词",
     )
 
     # 常规参数
@@ -121,12 +151,19 @@ def main():
     setup_logger(args.log_level)
 
     # 读取关键词
-    terms = read_terms_from_file(args.file)
+    terms = []
+    if args.file:
+        terms = read_terms_from_file(args.file)
+        source_desc = f"文件 {args.file}"
+    else:
+        terms = read_terms_from_directory(args.directory)
+        source_desc = f"目录 {args.directory}"
+
     if not terms:
-        logger.error(f"未能从文件 {args.file} 中读取到任何关键词")
+        logger.error(f"未能从{source_desc}中读取到任何关键词")
         return 1
 
-    logger.info(f"从文件读取了 {len(terms)} 个搜索关键词")
+    logger.info(f"从{source_desc}读取了 {len(terms)} 个搜索关键词")
 
     # 输出一些关键词作为示例
     if len(terms) > 5:

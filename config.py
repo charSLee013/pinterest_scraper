@@ -29,14 +29,14 @@ SCROLL_PAUSE_TIME = 1.0  # 滚动暂停时间(秒)
 DEFAULT_TIMEOUT = 30  # 默认超时时间(秒)
 MAX_RETRIES = 3  # 最大重试次数
 RETRY_DELAY = 2.0  # 重试延迟(秒)
-
+ZOOM_LEVEL = 100  # 缩放级别(百分比，例如30表示30%)
 # 并发配置
 DEFAULT_THREAD_COUNT = 16  # 默认下载线程数
 MAX_THREAD_COUNT = 32  # 最大下载线程数
 
 # Chrome驱动配置
 CHROME_OPTIONS = [
-    "--headless=new",
+    "--headless=new",  # 注释的话可以看到页面来实时debug卡点在哪
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",

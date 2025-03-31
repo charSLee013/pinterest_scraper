@@ -6,9 +6,12 @@ Pinterest爬虫的浏览器操作模块
 """
 
 import json
+import os
 import platform
 import random
+import threading
 import time
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from fake_useragent import UserAgent
@@ -33,7 +36,6 @@ class Browser:
         timeout: int = config.DEFAULT_TIMEOUT,
         viewport_width: int = 1920,
         viewport_height: int = 1080,
-        zoom_level: int = 76,  # 30% 的缩放级别，值越小缩放越大
     ):
         """初始化浏览器
 
@@ -51,7 +53,94 @@ class Browser:
         self.user_agent = self.ua.random
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
-        self.zoom_level = zoom_level
+        self.zoom_level = config.ZOOM_LEVEL
+        self.monitoring_active = False
+        self.monitoring_thread = None
+        self.screenshot_dir = None
+
+    def start_monitoring(self, session_id):
+        """启动浏览器监控线程
+
+        Args:
+            session_id: 会话ID，用于创建监控文件夹
+        """
+        if (
+            not hasattr(config, "ENABLE_LIVE_MONITORING")
+            or not config.ENABLE_LIVE_MONITORING
+        ):
+            return
+
+        # 创建监控文件夹
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.screenshot_dir = os.path.join(
+            "output", str(session_id), "monitoring", timestamp
+        )
+        os.makedirs(self.screenshot_dir, exist_ok=True)
+
+        # 启动监控线程
+        self.monitoring_active = True
+        self.monitoring_thread = threading.Thread(target=self._monitoring_loop)
+        self.monitoring_thread.daemon = True
+        self.monitoring_thread.start()
+        logger.info(f"浏览器监控已启动，截图保存在: {self.screenshot_dir}")
+
+    def stop_monitoring(self):
+        """停止浏览器监控"""
+        self.monitoring_active = False
+        if self.monitoring_thread:
+            self.monitoring_thread.join(timeout=2)
+            self.monitoring_thread = None
+            logger.info("浏览器监控已停止")
+
+    def _monitoring_loop(self):
+        """监控线程主循环"""
+        screenshot_interval = getattr(config, "SCREENSHOT_INTERVAL", 5)
+        counter = 0
+
+        while self.monitoring_active and self.driver:
+            try:
+                # 截图
+                screenshot_path = os.path.join(
+                    self.screenshot_dir, f"screenshot_{counter:04d}.png"
+                )
+                self.driver.save_screenshot(screenshot_path)
+
+                # 保存当前页面HTML
+                html_path = os.path.join(
+                    self.screenshot_dir, f"page_{counter:04d}.html"
+                )
+                with open(html_path, "w", encoding="utf-8") as f:
+                    f.write(self.driver.page_source)
+
+                # 记录浏览器状态
+                scroll_position = self.driver.execute_script(
+                    "return window.pageYOffset;"
+                )
+                page_height = self.get_page_height()
+                status_info = {
+                    "timestamp": datetime.now().isoformat(),
+                    "scroll_position": scroll_position,
+                    "page_height": page_height,
+                    "viewport_height": self.viewport_height,
+                    "is_page_end": scroll_position + self.viewport_height
+                    >= page_height,
+                    "url": self.driver.current_url,
+                }
+
+                status_path = os.path.join(self.screenshot_dir, "browser_status.json")
+                with open(status_path, "w", encoding="utf-8") as f:
+                    json.dump(status_info, f, indent=2)
+
+                logger.debug(
+                    f"监控: 截图 #{counter}, 滚动位置: {scroll_position}/{page_height}"
+                )
+                counter += 1
+
+                # 等待下一次截图
+                time.sleep(screenshot_interval)
+            except Exception as e:
+                logger.error(f"监控线程异常: {e}")
+                time.sleep(screenshot_interval)
 
     def start(self) -> bool:
         """启动浏览器
@@ -65,6 +154,7 @@ class Browser:
 
         try:
             logger.info("初始化浏览器...")
+            self.start_monitoring(session_id=1)
 
             # 设置Chrome选项
             chrome_options = Options()
@@ -159,6 +249,9 @@ class Browser:
 
     def stop(self):
         """关闭浏览器"""
+        # 停止监控
+        self.stop_monitoring()
+
         if self.driver:
             try:
                 self.driver.quit()
@@ -336,7 +429,7 @@ class Browser:
             return []
 
     def simple_scroll_and_extract(
-        self, target_count: int, extract_func, max_scroll_attempts: int = 50
+        self, target_count: int, extract_func, max_scroll_attempts: int = 5000
     ) -> List:
         """简化的滚动并提取数据函数
 
@@ -360,35 +453,33 @@ class Browser:
         results = []
         scroll_count = 0
         no_change_count = 0
-        consecutive_empty_results = 0
         scroll_position = 0
-        consecutive_no_new_data = 0  # 连续几次没有新数据的计数
-        last_result_count = 0  # 上次的结果数量
+        consecutive_no_new_data = 0
+        last_height = 0
+        stuck_count = 0  # 新增：记录页面高度停滞的次数
+        max_stuck_count = 5  # 新增：最大停滞次数
 
         # 使用集合存储已处理的项目ID，避免重复
         processed_ids = set()
 
-        # 优化滚动速度，使用较大的滚动步长
-        scroll_step = int(self.viewport_height * 0.8)  # 80%的视口高度
+        # 优化滚动速度，使用更大的滚动步长
+        base_scroll_step = int(self.viewport_height * 0.8)  # 增加到80%的视口高度
+        min_scroll_step = int(self.viewport_height * 0.3)  # 最小滚动步长
+        max_scroll_step = int(self.viewport_height * 1.2)  # 最大滚动步长
 
         while len(results) < target_count and scroll_count < max_scroll_attempts:
-            # 增加滚动计数
             scroll_count += 1
-
-            # 获取当前高度
             current_height = self.get_page_height()
 
             # 输出调试信息
             logger.debug(
-                f"滚动 #{scroll_count}, 当前高度: {current_height}px, 已收集: {len(results)}, 滚动位置: {scroll_position}/{current_height}"
+                f"滚动 #{scroll_count}, 当前高度: {current_height}px, 已收集: {len(results)}, "
+                f"滚动位置: {scroll_position}/{current_height}, 停滞计数: {stuck_count}"
             )
 
             # 提取当前页面上的数据
             page_source = self.get_page_source()
             new_items = extract_func(page_source)
-
-            # 记录当前结果数
-            current_result_count = len(results)
 
             # 过滤并添加新项目
             new_added = 0
@@ -399,9 +490,17 @@ class Browser:
                     results.append(item)
                     new_added += 1
 
-                    # 如果收集足够数量，提前退出
                     if len(results) >= target_count:
                         break
+                else:
+                    # find id in results
+                    old_item = next(
+                        (item for item in results if item.get("id") == item_id), None
+                    )
+                    if old_item:
+                        logger.debug(
+                            f"已处理项目: {item_id},已有信息url:{old_item.get('url', '')} 新的itemurl:{item.get('url', '')}"
+                        )
 
             logger.debug(f"这次滚动添加了 {new_added} 个新项目")
 
@@ -418,100 +517,141 @@ class Browser:
                 logger.info(f"已收集到足够数量: {len(results)}/{target_count}")
                 break
 
-            # 如果连续多次没有新数据，尝试不同的加载策略
-            if consecutive_no_new_data >= 4:
-                logger.warning(
-                    f"连续 {consecutive_no_new_data} 次未获取到新数据，尝试特殊滚动策略"
-                )
-
-                if consecutive_no_new_data == 4:
-                    # 策略1: 快速向上滚动一段距离再向下滚动，触发新的加载
-                    logger.debug("策略1: 向上滚动后再向下")
-                    up_scroll = min(int(self.viewport_height * 1.5), scroll_position)
-                    self.driver.execute_script(f"window.scrollBy(0, -{up_scroll});")
-                    time.sleep(1)
-                    self.driver.execute_script(
-                        f"window.scrollBy(0, {up_scroll + 300});"
-                    )
-                    time.sleep(1.5)
-
-                elif consecutive_no_new_data == 5:
-                    # 策略2: 跳到页面底部然后回到当前位置
-                    logger.debug("策略2: 跳到页面底部再回来")
-                    current_pos = scroll_position
+            # 检查页面高度是否停滞
+            if current_height == last_height:
+                stuck_count += 1
+                if stuck_count >= max_stuck_count:
+                    logger.warning(f"页面高度停滞 {stuck_count} 次，尝试特殊滚动策略")
+                    # 尝试强制滚动到底部
                     self.driver.execute_script(
                         "window.scrollTo(0, document.body.scrollHeight);"
                     )
                     time.sleep(2)
-                    self.driver.execute_script(f"window.scrollTo(0, {current_pos});")
+                    # 回到当前位置
+                    self.driver.execute_script(
+                        f"window.scrollTo(0, {scroll_position});"
+                    )
                     time.sleep(1)
+                    stuck_count = 0
+            else:
+                stuck_count = 0
+                last_height = current_height
+
+            # 如果连续多次没有新数据，尝试不同的加载策略
+            if consecutive_no_new_data >= 3:
+                logger.warning(
+                    f"连续 {consecutive_no_new_data} 次未获取到新数据，尝试特殊滚动策略"
+                )
+
+                if consecutive_no_new_data == 3:
+                    # 策略1: 随机滚动步长
+                    random_step = random.randint(min_scroll_step, max_scroll_step)
+                    self.driver.execute_script(f"window.scrollBy(0, {random_step});")
+                    time.sleep(2)
+
+                elif consecutive_no_new_data == 4:
+                    # 策略2: 向上滚动一段距离再向下滚动
+                    up_scroll = min(int(self.viewport_height * 1.5), scroll_position)
+                    self.driver.execute_script(f"window.scrollBy(0, -{up_scroll});")
+                    time.sleep(2)
+                    self.driver.execute_script(
+                        f"window.scrollBy(0, {up_scroll + 200});"
+                    )
+                    time.sleep(2)
+
+                elif consecutive_no_new_data == 5:
+                    # 策略3: 模拟真实用户滚动行为
+                    current_pos = scroll_position
+                    target_pos = min(
+                        current_pos + int(self.viewport_height * 2), current_height
+                    )
+                    steps = random.randint(5, 10)
+                    for i in range(steps):
+                        step = (target_pos - current_pos) // steps
+                        self.driver.execute_script(f"window.scrollBy(0, {step});")
+                        time.sleep(random.uniform(0.1, 0.3))
+
                 elif consecutive_no_new_data == 6:
-                    # 策略3: 刷新页面，重新开始
-                    logger.debug("策略3: 刷新页面")
+                    # 策略4: 刷新页面并快速滚动到当前位置
                     current_url = self.driver.current_url
                     self.driver.refresh()
-                    time.sleep(3)
-                    # 快速滚动到当前位置
-                    # Convert scroll_position to int to avoid TypeError
+                    time.sleep(5)
+
+                    # 使用更自然的滚动行为回到当前位置
                     scroll_position_int = int(scroll_position)
-                    for pos in range(0, scroll_position_int, scroll_step):
-                        self.driver.execute_script(f"window.scrollTo(0, {pos});")
-                        time.sleep(0.1)
-                    time.sleep(1)
+                    steps = random.randint(8, 12)
+                    for i in range(steps):
+                        step = scroll_position_int // steps
+                        self.driver.execute_script(
+                            f"window.scrollTo(0, {step * (i + 1)});"
+                        )
+                        time.sleep(random.uniform(0.2, 0.4))
 
-                elif consecutive_no_new_data > 8:
+                elif consecutive_no_new_data == 7:
+                    # 策略5: 尝试点击"显示更多"按钮
+                    try:
+                        load_more_selectors = [
+                            "button[aria-label='更多想法']",
+                            "button:contains('更多')",
+                            "button:contains('加载更多')",
+                            "button:contains('Show more')",
+                            "button:contains('Load more')",
+                            "[data-test-id='scrollContainer'] button",
+                        ]
+
+                        for selector in load_more_selectors:
+                            try:
+                                elements = self.driver.find_elements(
+                                    By.CSS_SELECTOR, selector
+                                )
+                                if elements:
+                                    logger.info(f"找到可能的加载更多按钮: {selector}")
+                                    elements[0].click()
+                                    time.sleep(3)
+                                    break
+                            except:
+                                continue
+
+                        # 尝试执行JavaScript点击
+                        self.driver.execute_script("""
+                            var buttons = document.querySelectorAll('button');
+                            for(var i=0; i<buttons.length; i++) {
+                                if(buttons[i].innerText.includes('更多') || 
+                                   buttons[i].innerText.includes('more') ||
+                                   buttons[i].innerText.toLowerCase().includes('load')) {
+                                    buttons[i].click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        """)
+                        time.sleep(3)
+                    except Exception as e:
+                        logger.debug(f"尝试点击加载更多按钮失败: {e}")
+
+                elif consecutive_no_new_data > 10:
                     logger.warning(
-                        f"多次尝试后仍无法获取新数据，当前已收集 {len(results)} 项，停止滚动"
+                        f"多次尝试后仍无法获取新数据，当前已收集 {len(results)} 项"
                     )
-                    break
+                    if consecutive_no_new_data > 15:
+                        logger.warning("达到最大尝试次数，停止滚动")
+                        break
 
-                # 不立即继续常规滚动
                 continue
 
-            # 执行滚动
-            self.scroll_by(scroll_step)
+            # 执行常规滚动，使用随机步长
+            random_step = random.randint(min_scroll_step, max_scroll_step)
+            self.scroll_by(random_step)
+
+            # 记录滚动位置
             scroll_position = self.driver.execute_script("return window.pageYOffset;")
 
-            # 等待加载
-            time.sleep(config.SCROLL_PAUSE_TIME)
-
-            # 检查高度变化 - 仅作为参考，不作为主要决策依据
-            new_height = self.get_page_height()
-            if new_height == current_height:
-                no_change_count += 1
-                if no_change_count >= 3:
-                    logger.debug("页面高度停止变化，但继续检查是否有新内容")
-
-                    # 仍然尝试滚动触发加载，但不强制终止
-                    if no_change_count % 3 == 0:
-                        # 尝试滚动到顶部再回来以触发加载
-                        random_offset = random.randint(100, 300)
-                        logger.debug(
-                            f"尝试滚动触发：当前位置 {scroll_position} ± {random_offset}"
-                        )
-
-                        # 随机向上或向下稍微滚动一点以触发新加载
-                        if random.random() > 0.5:
-                            self.driver.execute_script(
-                                f"window.scrollBy(0, {random_offset});"
-                            )
-                        else:
-                            self.driver.execute_script(
-                                f"window.scrollBy(0, -{random_offset});"
-                            )
-                        time.sleep(0.5)
-                        # 回到原位置
-                        self.driver.execute_script(
-                            f"window.scrollTo(0, {scroll_position});"
-                        )
-                        time.sleep(0.5)
-            else:
-                # 高度有变化，重置计数
-                no_change_count = 0
-                logger.debug(f"页面高度从 {current_height} 变为 {new_height}")
-
-            # 保存上次结果数量
-            last_result_count = len(results)
+            # 随机等待时间，模拟真实用户行为
+            time.sleep(
+                random.uniform(
+                    config.SCROLL_PAUSE_TIME * 0.8, config.SCROLL_PAUSE_TIME * 1.5
+                )
+            )
 
         # 返回收集的结果
         logger.info(f"滚动完成，共收集 {len(results)} 项")
