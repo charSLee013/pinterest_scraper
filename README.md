@@ -1,4 +1,9 @@
 # 🎨 Pinterest 图片爬虫
+<p align="center">
+  <a href="./README.md"><img alt="简体中文版自述文件" src="https://img.shields.io/badge/简体中文-d9d9d9"></a>
+  <a href="./README_EN.md"><img alt="README in English" src="https://img.shields.io/badge/English-d9d9d9"></a>
+</p>
+
 
 > 一个简单高效的 Pinterest 图片爬虫工具，支持关键词搜索和 URL 爬取，让你的素材收集变得轻松愉快！
 
