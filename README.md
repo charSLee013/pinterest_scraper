@@ -34,8 +34,8 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/creeponsky/image_scraper.git
-cd image_scraper
+git clone https://github.com/creeponsky/pinterest_scraper.git
+cd pinterest_scraper
 
 # 创建虚拟环境并安装依赖
 uv sync

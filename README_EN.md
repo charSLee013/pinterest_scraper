@@ -34,8 +34,8 @@ We recommend using [uv](https://github.com/astral-sh/uv) for environment managem
 
 ```bash
 # Clone the repository
-git clone https://github.com/creeponsky/image_scraper.git
-cd image_scraper
+git clone https://github.com/creeponsky/pinterest_scraper.git
+cd pinterest_scraper
 
 # Create virtual environment and install dependencies
 uv sync
