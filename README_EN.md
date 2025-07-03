@@ -13,6 +13,7 @@
 
 ## ✨ Features
 
+- 🚀 Robust browser automation with Playwright
 - 🔍 Support for keyword search and direct URL crawling
 - 🌊 Infinite scroll support
 - 🚀 Concurrent multi-keyword search
@@ -26,7 +27,7 @@
 ### Requirements
 
 - Python 3.10+
-- Chrome/Chromium browser
+- Playwright (automatically manages browser binaries like Chromium)
 
 ### Installation
 
@@ -98,7 +99,7 @@ uv run python main.py -u "https://www.pinterest.com/pin/xxx" -c 50
 
 - `main.py`: Main program entry
 - `pinterest.py`: Pinterest scraper core class
-- `browser.py`: Browser automation management
+- `browser.py`: Browser automation management (powered by Playwright)
 - `downloader.py`: Image downloader
 - `concurrent_search.py`: Concurrent search implementation
 - `parser.py`: Page parser

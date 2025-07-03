@@ -18,6 +18,7 @@
 
 ## ✨ 特性
 
+- 🚀 基于 Playwright 的强大浏览器自动化
 - 🔍 支持关键词搜索和 URL 直接爬取
 - 🌊 支持无限滚动加载
 - 🚀 多关键词并发搜索
@@ -31,7 +32,7 @@
 ### 环境要求
 
 - Python 3.10+
-- Chrome/Chromium 浏览器
+- Playwright (自动管理 Chromium 等浏览器二进制文件)
 
 ### 安装
 
@@ -103,7 +104,7 @@ uv run python main.py -u "https://www.pinterest.com/pin/xxx" -c 50
 
 - `main.py`: 主程序入口
 - `pinterest.py`: Pinterest 爬虫核心类
-- `browser.py`: 浏览器自动化管理
+- `browser.py`: 浏览器自动化管理 (由 Playwright 驱动)
 - `downloader.py`: 图片下载器
 - `concurrent_search.py`: 并发搜索实现
 - `parser.py`: 页面解析器
