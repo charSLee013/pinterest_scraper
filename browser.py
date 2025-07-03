@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 
 from fake_useragent import UserAgent
 from loguru import logger
-from playwright.sync_api import sync_playwright, Page, BrowserContext, Error
+from patchright.sync_api import sync_playwright, Page, BrowserContext, Error
 
 import config
 
