@@ -7,7 +7,6 @@ Pinterest爬虫的浏览器操作模块
 
 import json
 import os
-import platform
 import random
 import threading
 import time
@@ -16,13 +15,7 @@ from typing import Dict, List, Optional
 
 from fake_useragent import UserAgent
 from loguru import logger
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
+from playwright.sync_api import sync_playwright, Page, BrowserContext, Error
 
 import config
 
@@ -44,19 +37,20 @@ class Browser:
             timeout: 默认超时时间(秒)
             viewport_width: 浏览器视口宽度
             viewport_height: 浏览器视口高度
-            zoom_level: 缩放级别(百分比，例如30表示30%)
         """
-        self.driver = None
+        self.playwright_instance = None
+        self.browser = None
+        self.browser_context = None
+        self.page = None
         self.proxy = proxy
         self.timeout = timeout
-        self.ua = UserAgent()
-        self.user_agent = self.ua.random
+        self.user_agent = UserAgent().random # Directly initialize user_agent
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
-        self.zoom_level = config.ZOOM_LEVEL
         self.monitoring_active = False
         self.monitoring_thread = None
         self.screenshot_dir = None
+        self.browser_type = 'chromium'
 
     def start_monitoring(self, session_id):
         """启动浏览器监控线程
@@ -97,24 +91,24 @@ class Browser:
         screenshot_interval = getattr(config, "SCREENSHOT_INTERVAL", 5)
         counter = 0
 
-        while self.monitoring_active and self.driver:
+        while self.monitoring_active and self.page:
             try:
                 # 截图
                 screenshot_path = os.path.join(
                     self.screenshot_dir, f"screenshot_{counter:04d}.png"
                 )
-                self.driver.save_screenshot(screenshot_path)
+                self.page.screenshot(path=screenshot_path)
 
                 # 保存当前页面HTML
                 html_path = os.path.join(
                     self.screenshot_dir, f"page_{counter:04d}.html"
                 )
                 with open(html_path, "w", encoding="utf-8") as f:
-                    f.write(self.driver.page_source)
+                    f.write(self.page.content())
 
                 # 记录浏览器状态
-                scroll_position = self.driver.execute_script(
-                    "return window.pageYOffset;"
+                scroll_position = self.page.evaluate(
+                    "window.pageYOffset;"
                 )
                 page_height = self.get_page_height()
                 status_info = {
@@ -124,7 +118,7 @@ class Browser:
                     "viewport_height": self.viewport_height,
                     "is_page_end": scroll_position + self.viewport_height
                     >= page_height,
-                    "url": self.driver.current_url,
+                    "url": self.page.url,
                 }
 
                 status_path = os.path.join(self.screenshot_dir, "browser_status.json")
@@ -148,7 +142,7 @@ class Browser:
         Returns:
             启动是否成功
         """
-        if self.driver:
+        if self.page:
             # 浏览器已经启动
             return True
 
@@ -156,110 +150,62 @@ class Browser:
             logger.info("初始化浏览器...")
             self.start_monitoring(session_id=1)
 
-            # 设置Chrome选项
-            chrome_options = Options()
-            for option in config.CHROME_OPTIONS:
-                chrome_options.add_argument(option)
-
-            # 设置随机用户代理
-            chrome_options.add_argument(f"user-agent={self.user_agent}")
+            self.playwright_instance = sync_playwright().start()
+            launch_options = {
+                "headless": True if "--headless=new" in config.CHROME_OPTIONS else False,
+                "args": [opt for opt in config.CHROME_OPTIONS if "--headless" not in opt],
+            }
 
             # 设置代理(如果有)
             if self.proxy:
-                chrome_options.add_argument(f"--proxy-server={self.proxy}")
-
-            # 设置性能日志(如果启用HTTP调试)
-            if config.DEBUG_HTTP_ENABLED:
-                chrome_options.set_capability(
-                    "goog:loggingPrefs", {"performance": "ALL", "browser": "ALL"}
-                )
-
-            # 设置浏览器窗口尺寸
-            chrome_options.add_argument(
-                f"--window-size={self.viewport_width},{self.viewport_height}"
-            )
-
-            # 第一次尝试：使用标准方法
-            logger.debug(f"操作系统: {platform.system()} {platform.release()}")
-            try:
-                if platform.system() == "Windows":
-                    # Windows特殊处理
-                    driver_path = ChromeDriverManager().install()
-                    service = Service(driver_path)
-                    self.driver = webdriver.Chrome(
-                        service=service, options=chrome_options
-                    )
+                parsed_proxy = {}
+                if self.proxy.startswith("http://") or self.proxy.startswith("https://"):
+                    parsed_proxy["server"] = self.proxy
                 else:
-                    # 其它操作系统
-                    service = Service(ChromeDriverManager().install())
-                    self.driver = webdriver.Chrome(
-                        service=service, options=chrome_options
-                    )
+                    parsed_proxy["server"] = f"http://{self.proxy}"
+                launch_options["proxy"] = parsed_proxy
 
-                logger.info("浏览器初始化成功")
+            self.browser = self.playwright_instance.chromium.launch(**launch_options)
+            self.browser_context = self.browser.new_context(
+                user_agent=self.user_agent,
+                viewport={
+                    "width": self.viewport_width,
+                    "height": self.viewport_height
+                },
+                base_url="about:blank", # Prevent automatic navigation
+                java_script_enabled=True,
+            )
+            self.page = self.browser_context.new_page()
 
-            except Exception as e:
-                # 第二次尝试：备用方法
-                logger.warning(f"标准初始化失败: {e}，尝试备用方法")
-                try:
-                    self.driver = webdriver.Chrome(options=chrome_options)
-                    logger.info("使用备用方法初始化成功")
-                except Exception as e2:
-                    logger.error(f"浏览器初始化失败: {e2}")
-                    return False
+            # 设置默认超时
+            self.page.set_default_timeout(self.timeout * 1000)
 
-            # 设置超时
-            self.driver.set_page_load_timeout(self.timeout)
-            self.driver.set_script_timeout(self.timeout)
-
-            # 设置窗口大小
-            self.driver.set_window_size(self.viewport_width, self.viewport_height)
-
-            # 应用自定义CSS缩放
-            self.apply_zoom()
-
+            logger.info("浏览器初始化成功")
             return True
 
         except Exception as e:
             logger.error(f"浏览器启动异常: {e}")
             return False
 
-    def apply_zoom(self):
-        """应用缩放到页面"""
-        if not self.driver:
-            return
-
-        try:
-            # 使用CSS缩放方式
-            zoom_script = f"""
-            document.body.style.zoom = '{self.zoom_level}%';
-            document.body.style.cssText += '; -moz-transform: scale({self.zoom_level / 100}); -moz-transform-origin: 0 0;';
-            """
-            self.driver.execute_script(zoom_script)
-
-            # 备用方法：使用Chrome DevTools Protocol设置缩放比例
-            self.driver.execute_cdp_cmd(
-                "Emulation.setPageScaleFactor",
-                {"pageScaleFactor": self.zoom_level / 100},
-            )
-
-            logger.debug(f"页面缩放设置为 {self.zoom_level}%")
-        except Exception as e:
-            logger.warning(f"设置页面缩放失败: {e}")
 
     def stop(self):
         """关闭浏览器"""
         # 停止监控
         self.stop_monitoring()
 
-        if self.driver:
+        if self.page:
             try:
-                self.driver.quit()
+                self.browser_context.close()
+                self.browser.close()
+                self.playwright_instance.stop()
                 logger.info("浏览器已关闭")
             except Exception as e:
                 logger.error(f"关闭浏览器出错: {e}")
             finally:
-                self.driver = None
+                self.page = None
+                self.browser_context = None
+                self.browser = None
+                self.playwright_instance = None
 
     def get_url(self, url: str) -> bool:
         """访问URL
@@ -270,17 +216,9 @@ class Browser:
         Returns:
             访问是否成功
         """
-        if not self.driver:
-            logger.error("浏览器未初始化")
-            return False
-
         try:
             logger.info(f"访问URL: {url}")
-            self.driver.get(url)
-
-            # 应用缩放 (因为新页面加载后可能会重置缩放)
-            self.apply_zoom()
-
+            self.page.goto(url, timeout=self.timeout * 1000, wait_until="domcontentloaded")
             return True
         except Exception as e:
             logger.error(f"访问URL失败: {e}")
@@ -296,13 +234,11 @@ class Browser:
         Returns:
             元素是否出现
         """
-        if not self.driver:
+        if not self.page:
             return False
 
         try:
-            WebDriverWait(self.driver, timeout).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-            )
+            self.page.wait_for_selector(selector, timeout=timeout * 1000)
             return True
         except Exception as e:
             logger.warning(f"等待元素 '{selector}' 超时: {e}")
@@ -317,11 +253,11 @@ class Browser:
         Returns:
             找到的元素列表
         """
-        if not self.driver:
+        if not self.page:
             return []
 
         try:
-            elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+            elements = self.page.locator(selector).all()
             return elements
         except Exception as e:
             logger.error(f"查找元素失败: {e}")
@@ -329,13 +265,11 @@ class Browser:
 
     def scroll_to_bottom(self):
         """滚动到页面底部"""
-        if not self.driver:
+        if not self.page:
             return
 
         try:
-            self.driver.execute_script(
-                "window.scrollTo(0, document.body.scrollHeight);"
-            )
+            self.page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
         except Exception as e:
             logger.error(f"滚动到底部出错: {e}")
 
@@ -345,11 +279,11 @@ class Browser:
         Args:
             pixels: 滚动的像素数
         """
-        if not self.driver:
+        if not self.page:
             return
 
         try:
-            self.driver.execute_script(f"window.scrollBy(0, {pixels});")
+            self.page.evaluate(f"window.scrollBy(0, {pixels});")
         except Exception as e:
             logger.error(f"滚动出错: {e}")
 
@@ -359,11 +293,11 @@ class Browser:
         Returns:
             页面高度(像素)
         """
-        if not self.driver:
+        if not self.page:
             return 0
 
         try:
-            return self.driver.execute_script("return document.body.scrollHeight")
+            return self.page.evaluate("document.body.scrollHeight")
         except Exception as e:
             logger.error(f"获取页面高度出错: {e}")
             return 0
@@ -377,11 +311,11 @@ class Browser:
         Returns:
             是否成功
         """
-        if not self.driver:
+        if not self.page:
             return False
 
         try:
-            self.driver.save_screenshot(filepath)
+            self.page.screenshot(path=filepath)
             logger.debug(f"截图已保存: {filepath}")
             return True
         except Exception as e:
@@ -394,10 +328,10 @@ class Browser:
         Returns:
             页面HTML源码
         """
-        if not self.driver:
+        if not self.page:
             return ""
 
-        return self.driver.page_source
+        return self.page.content()
 
     def get_network_requests(self) -> List[Dict]:
         """获取页面网络请求数据
@@ -405,27 +339,10 @@ class Browser:
         Returns:
             网络请求数据列表
         """
-        if not self.driver or not config.DEBUG_HTTP_ENABLED:
-            return []
-
-        try:
-            logs = self.driver.get_log("performance")
-            request_data = []
-
-            for entry in logs:
-                try:
-                    log = json.loads(entry["message"])["message"]
-                    if (
-                        "Network.response" in log["method"]
-                        or "Network.request" in log["method"]
-                    ):
-                        request_data.append(log)
-                except:
-                    pass
-
-            return request_data
-        except Exception as e:
-            logger.error(f"获取网络请求数据失败: {e}")
+        if not self.page or not config.DEBUG_HTTP_ENABLED:
+            # Playwright network interception requires different approach, returning empty for now.
+            # Refer to Playwright documentation for proper network logging implementation.
+            logger.warning("get_network_requests 方法暂不支持，返回空列表。")
             return []
 
     def simple_scroll_and_extract(
@@ -443,7 +360,7 @@ class Browser:
         Returns:
             提取的数据列表
         """
-        if not self.driver:
+        if not self.page:
             logger.error("浏览器未初始化")
             return []
 
@@ -523,12 +440,12 @@ class Browser:
                 if stuck_count >= max_stuck_count:
                     logger.warning(f"页面高度停滞 {stuck_count} 次，尝试特殊滚动策略")
                     # 尝试强制滚动到底部
-                    self.driver.execute_script(
+                    self.page.evaluate(
                         "window.scrollTo(0, document.body.scrollHeight);"
                     )
                     time.sleep(2)
                     # 回到当前位置
-                    self.driver.execute_script(
+                    self.page.evaluate(
                         f"window.scrollTo(0, {scroll_position});"
                     )
                     time.sleep(1)
@@ -546,15 +463,15 @@ class Browser:
                 if consecutive_no_new_data == 3:
                     # 策略1: 随机滚动步长
                     random_step = random.randint(min_scroll_step, max_scroll_step)
-                    self.driver.execute_script(f"window.scrollBy(0, {random_step});")
+                    self.page.evaluate(f"window.scrollBy(0, {random_step});")
                     time.sleep(2)
 
                 elif consecutive_no_new_data == 4:
                     # 策略2: 向上滚动一段距离再向下滚动
                     up_scroll = min(int(self.viewport_height * 1.5), scroll_position)
-                    self.driver.execute_script(f"window.scrollBy(0, -{up_scroll});")
+                    self.page.evaluate(f"window.scrollBy(0, -{up_scroll});")
                     time.sleep(2)
-                    self.driver.execute_script(
+                    self.page.evaluate(
                         f"window.scrollBy(0, {up_scroll + 200});"
                     )
                     time.sleep(2)
@@ -568,13 +485,13 @@ class Browser:
                     steps = random.randint(5, 10)
                     for i in range(steps):
                         step = (target_pos - current_pos) // steps
-                        self.driver.execute_script(f"window.scrollBy(0, {step});")
+                        self.page.evaluate(f"window.scrollBy(0, {step});")
                         time.sleep(random.uniform(0.1, 0.3))
 
                 elif consecutive_no_new_data == 6:
                     # 策略4: 刷新页面并快速滚动到当前位置
-                    current_url = self.driver.current_url
-                    self.driver.refresh()
+                    current_url = self.page.url
+                    self.page.reload()
                     time.sleep(5)
 
                     # 使用更自然的滚动行为回到当前位置
@@ -582,7 +499,7 @@ class Browser:
                     steps = random.randint(8, 12)
                     for i in range(steps):
                         step = scroll_position_int // steps
-                        self.driver.execute_script(
+                        self.page.evaluate(
                             f"window.scrollTo(0, {step * (i + 1)});"
                         )
                         time.sleep(random.uniform(0.2, 0.4))
@@ -601,19 +518,18 @@ class Browser:
 
                         for selector in load_more_selectors:
                             try:
-                                elements = self.driver.find_elements(
-                                    By.CSS_SELECTOR, selector
-                                )
+                                elements = self.page.locator(selector).all()
                                 if elements:
                                     logger.info(f"找到可能的加载更多按钮: {selector}")
                                     elements[0].click()
                                     time.sleep(3)
                                     break
-                            except:
+                            except Exception as click_e:
+                                logger.debug(f"点击加载更多按钮失败 ({selector}): {click_e}")
                                 continue
 
                         # 尝试执行JavaScript点击
-                        self.driver.execute_script("""
+                        self.page.evaluate("""
                             var buttons = document.querySelectorAll('button');
                             for(var i=0; i<buttons.length; i++) {
                                 if(buttons[i].innerText.includes('更多') || 
@@ -644,7 +560,7 @@ class Browser:
             self.scroll_by(random_step)
 
             # 记录滚动位置
-            scroll_position = self.driver.execute_script("return window.pageYOffset;")
+            scroll_position = self.page.evaluate("window.pageYOffset;")
 
             # 随机等待时间，模拟真实用户行为
             time.sleep(

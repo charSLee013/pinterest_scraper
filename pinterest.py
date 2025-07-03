@@ -53,7 +53,6 @@ class PinterestScraper:
         self.download_images = download_images
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
-        self.zoom_level = config.ZOOM_LEVEL
 
         # 创建主输出目录
         os.makedirs(output_dir, exist_ok=True)
@@ -66,9 +65,10 @@ class PinterestScraper:
             viewport_height=viewport_height,
         )
 
+
         logger.info(
             f"Pinterest爬虫初始化完成。输出目录: {output_dir}, 调试模式: {debug}, 下载图片: {download_images}, "
-            f"视口: {viewport_width}x{viewport_height}, 缩放: {self.zoom_level}%"
+            f"视口: {viewport_width}x{viewport_height}"
         )
 
     def search(self, query: str, count: int = 50) -> List[Dict]:

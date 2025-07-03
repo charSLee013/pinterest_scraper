@@ -384,6 +384,85 @@ def extract_pins_from_html(html: str) -> List[Dict]:
     soup = BeautifulSoup(html, "html.parser")
     pins = []
 
+    # 尝试从 <script type="application/ld+json"> 标签中提取JSON-LD数据
+    # 这通常在单个pin页面或富媒体页面中包含详细信息
+    json_ld_scripts = soup.find_all("script", type="application/ld+json")
+    for script in json_ld_scripts:
+        try:
+            json_data = json.loads(script.string)
+            # 检查是否为单个Pin的JSON-LD数据
+            if "@context" in json_data and "schema.org" in json_data["@context"]:
+                # Pinterest的单个pin页面通常包含Graph数据
+                if "@graph" in json_data:
+                    for item in json_data["@graph"]:
+                        if item.get("@type") == "ImageObject" and "mainEntityOfPage" in item:
+                            pin_url = item["mainEntityOfPage"]
+                            pin_id = re.search(r"/pin/(\d+)/", pin_url)
+                            if pin_id:
+                                # 提取图片URL
+                                image_urls = {
+                                    "original": item.get("contentUrl") or item.get("url"),
+                                    "width": item.get("width"),
+                                    "height": item.get("height")
+                                }
+                                # 尝试从thumbnailUrl获取不同尺寸
+                                if "thumbnailUrl" in item and isinstance(item["thumbnailUrl"], list):
+                                    for thumb_url in item["thumbnailUrl"]:
+                                        size_match = re.search(r"/(\d+)x", thumb_url)
+                                        if size_match:
+                                            image_urls[size_match.group(1)] = thumb_url
+
+                                pin_info = {
+                                    "id": pin_id.group(1),
+                                    "url": pin_url,
+                                    "title": item.get("name") or "",
+                                    "description": item.get("description") or "",
+                                    "image_urls": image_urls,
+                                    "largest_image_url": find_largest_image_url(image_urls),
+                                    "creator": {
+                                        "name": item["creator"].get("name") if "creator" in item and isinstance(item["creator"], dict) else "",
+                                        "url": item["creator"].get("url") if "creator" in item and isinstance(item["creator"], dict) else ""
+                                    },
+                                    "tags": item.get("keywords", [])
+                                }
+                                # 进一步丰富数据，特别是处理嵌套结构
+                                final_pin = enrich_pin_data_from_json({}, pin_info)
+                                pins.append(final_pin)
+                # 兼容直接的ImageObject或Product数据
+                elif json_data.get("@type") == "ImageObject" or json_data.get("@type") == "Product":
+                    pin_url = json_data.get("mainEntityOfPage") or json_data.get("url")
+                    pin_id = re.search(r"/pin/(\d+)/", pin_url) if pin_url else ""
+                    if pin_id:
+                        image_urls = {
+                            "original": json_data.get("contentUrl") or json_data.get("image") or json_data.get("url"),
+                            "width": json_data.get("width"),
+                            "height": json_data.get("height")
+                        }
+                        pin_info = {
+                            "id": pin_id.group(1),
+                            "url": pin_url,
+                            "title": json_data.get("name") or "",
+                            "description": json_data.get("description") or "",
+                            "image_urls": image_urls,
+                            "largest_image_url": find_largest_image_url(image_urls),
+                            "creator": {
+                                "name": json_data["creator"].get("name") if "creator" in json_data and isinstance(json_data["creator"], dict) else "",
+                                "url": json_data["creator"].get("url") if "creator" in json_data and isinstance(json_data["creator"], dict) else ""
+                            }
+                        }
+                        final_pin = enrich_pin_data_from_json({}, pin_info)
+                        pins.append(final_pin)
+
+        except Exception as e:
+            logger.debug(f"解析JSON-LD数据失败: {e}")
+            continue
+
+    if pins:
+        logger.info(f"从JSON-LD中提取到 {len(pins)} 个pin数据")
+        return pins
+
+    # 如果没有从JSON-LD中提取到，继续尝试从HTML元素中提取
+    logger.info("未从JSON-LD中提取到pins，尝试从HTML元素中提取")
     # 尝试提取页面中的所有可能的pin元素
     for selector in config.PINTEREST_PIN_SELECTORS:
         pin_elements = soup.select(selector)
@@ -418,7 +497,7 @@ def extract_pins_from_html(html: str) -> List[Dict]:
             try:
                 data = json.loads(script.string)
                 # 在Redux状态中查找pins
-                if "props" in data and "initialReduxState" in data["props"]:
+                if "props" in data and "initialReduxState" in data["props"]:# {{ NEW_CODE }}
                     redux_state = data["props"]["initialReduxState"]
                     if "pins" in redux_state:
                         pin_items = redux_state["pins"]
