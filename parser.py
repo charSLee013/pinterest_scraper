@@ -279,95 +279,134 @@ def enrich_pin_data_from_json(pin_data: Dict, json_data: Dict) -> Dict:
     Returns:
         丰富后的Pin数据
     """
-    # 复制原始数据，避免修改原始对象
-    result = pin_data.copy()
+    # Initialize with default structure to ensure all keys exist and are empty by default
+    result = {
+        "id": "",
+        "description": "",
+        "image_urls": {},
+        "largest_image_url": "",
+        "title": "",
+        "creator": {},
+        "stats": {},
+        "url": "",
+        "created_at": "",
+        "source_link": "",
+        "board": {},
+        "categories": [],
+    }
 
-    # 如果JSON中包含图片数据
-    if "images" in json_data:
-        image_urls = {}
+    # Update with existing pin_data, which may contain partial info or override defaults
+    result.update(pin_data)
+
+    # Image URLs handling
+    # Start with existing image_urls in result, then update from json_data
+    image_urls = result["image_urls"].copy()
+
+    if "images" in json_data and isinstance(json_data["images"], dict):
         for size_key, img_data in json_data["images"].items():
-            if not isinstance(img_data, dict):
-                continue
-
-            if "url" in img_data:
+            if isinstance(img_data, dict) and "url" in img_data:
                 if size_key == "orig":
                     image_urls["original"] = img_data["url"]
                 else:
                     size = size_key.replace("x", "")
                     image_urls[size] = img_data["url"]
 
-        # 只有在找到新图片URL时才更新
-        if image_urls:
-            result["image_urls"] = image_urls
-            result["largest_image_url"] = find_largest_image_url(image_urls)
+    for key in ["contentUrl", "image", "url"]:
+        if key in json_data:
+            img_src = json_data[key]
+            if isinstance(img_src, dict) and "url" in img_src:
+                img_src = img_src["url"]
+            if isinstance(img_src, str):
+                image_urls.update(extract_image_urls_from_src(img_src))
+    
+    if "thumbnailUrl" in json_data:
+        thumbnails = json_data["thumbnailUrl"]
+        if isinstance(thumbnails, list):
+            for thumb_url in thumbnails:
+                if isinstance(thumb_url, str):
+                    image_urls.update(extract_image_urls_from_src(thumb_url))
+        elif isinstance(thumbnails, str):
+            image_urls.update(extract_image_urls_from_src(thumbnails))
 
-    # 基本信息
-    if "id" in json_data and json_data["id"] and result["id"] == "":
+    if image_urls:
+        result["image_urls"] = image_urls
+        result["largest_image_url"] = find_largest_image_url(image_urls)
+    elif "image_urls" in result:
+        del result["image_urls"]
+    if "largest_image_url" in result and not result.get("largest_image_url"):
+        del result["largest_image_url"]
+
+
+    # Basic info - only update if json_data has it
+    if "id" in json_data and json_data["id"]:
         result["id"] = str(json_data["id"])
-
     if "url" in json_data:
         result["url"] = json_data["url"]
-
-    if not result["description"] and "description" in json_data:
+    if "description" in json_data:
         result["description"] = json_data.get("description", "")
-
     if "title" in json_data:
         result["title"] = json_data.get("title", "")
 
-    # 创建者信息
-    creator = {}
+    # Creator info - only add if creator_source exists
     creator_source = None
-
-    if "creator" in json_data:
+    if "creator" in json_data and isinstance(json_data["creator"], dict):
         creator_source = json_data["creator"]
-    elif "pinner" in json_data:
+    elif "pinner" in json_data and isinstance(json_data["pinner"], dict):
         creator_source = json_data["pinner"]
 
-    if creator_source and isinstance(creator_source, dict):
+    if creator_source: # Only if creator_source is found
         creator = {
-            "name": creator_source.get("full_name", ""),
+            "name": creator_source.get("full_name", "") or creator_source.get("username", "") or creator_source.get("name", ""), # Added "name" as another fallback
             "username": creator_source.get("username", ""),
             "id": creator_source.get("id", ""),
             "follower_count": creator_source.get("follower_count", 0),
             "url": f"https://www.pinterest.com/{creator_source.get('username', '')}/",
         }
-
-        # 头像
         if "image_medium_url" in creator_source:
             creator["avatar_url"] = creator_source["image_medium_url"]
+        result["creator"] = creator # Only set if creator_source exists
+    elif "creator" in result: # If pin_data initially had an empty creator, remove it if no data from json_data
+        del result["creator"]
 
-    if creator:
-        result["creator"] = creator
+    # Stats - only add if any stats are found
+    stats = {}
+    if "like_count" in json_data:
+        stats["likes"] = json_data.get("like_count", 0)
+    if "repin_count" in json_data:
+        stats["saves"] = json_data.get("repin_count", 0)
+    if "comment_count" in json_data:
+        stats["comments"] = json_data.get("comment_count", 0)
 
-    # 统计数据
-    stats = {
-        "likes": json_data.get("like_count", 0),
-        "saves": json_data.get("repin_count", 0),
-        "comments": json_data.get("comment_count", 0),
-    }
-
-    if any(stats.values()):
+    if any(stats.values()): # Only set if at least one stat is non-zero
         result["stats"] = stats
+    elif "stats" in result: # Remove if pin_data initially had empty stats
+        del result["stats"]
 
-    # 其他元数据
+    # Other metadata
     if "created_at" in json_data:
         result["created_at"] = json_data["created_at"]
-
     if "link" in json_data:
         result["source_link"] = json_data["link"]
 
-    # 分类信息
+    # Board info - only add if board data exists
     if "board" in json_data and isinstance(json_data["board"], dict):
         board = json_data["board"]
+        board_url_path = board.get('url', '').lstrip('/')
         result["board"] = {
             "id": board.get("id", ""),
             "name": board.get("name", ""),
-            "url": f"https://www.pinterest.com/{board.get('url', '')}",
+            "url": f"https://www.pinterest.com/{board_url_path}" if board_url_path else "", # Fix double slash
         }
-
-        # 使用board.name作为分类
         if board.get("name"):
             result["categories"] = [c.strip() for c in board["name"].split("/")]
+    elif "board" in result: # Remove if pin_data initially had empty board
+        del result["board"]
+
+    # Categories - handled within board, but if it comes directly
+    if "categories" in json_data and isinstance(json_data["categories"], list):
+        result["categories"] = json_data["categories"]
+    elif "categories" in result: # Remove empty categories list if not populated by json_data
+        del result["categories"]
 
     return result
 
@@ -389,7 +428,28 @@ def extract_pins_from_html(html: str) -> List[Dict]:
     json_ld_scripts = soup.find_all("script", type="application/ld+json")
     for script in json_ld_scripts:
         try:
-            json_data = json.loads(script.string)
+            json_data = None  # Initialize json_data
+            if script.string: # Ensure script.string is not None or empty
+                if isinstance(script.string, dict):
+                    json_data = script.string
+                elif isinstance(script.string, str):
+                    try:
+                        json_data = json.loads(script.string)
+                    except json.JSONDecodeError as e:
+                        logger.debug(f"JSON-LD解码失败: {e}")
+                        json_data = None # Ensure it's None on failure
+                else:
+                    logger.warning(f"Unexpected type for script.string: {type(script.string)}, skipping JSON-LD parsing.")
+                    continue  # Skip to next script immediately
+            else: # If script.string is None or empty
+                logger.warning(f"Script string is empty or None, skipping JSON-LD parsing for script: {script.prettify()[:200]}")
+                continue # Skip to next script immediately
+            
+
+            if json_data is None:  # Check if it's still None after parsing attempts
+                logger.warning(f"Failed to parse JSON-LD from script: {script.prettify()[:200] if script.string else 'None'}, skipping.")
+                continue  # Move to next script
+
             # 检查是否为单个Pin的JSON-LD数据
             if "@context" in json_data and "schema.org" in json_data["@context"]:
                 # Pinterest的单个pin页面通常包含Graph数据
@@ -400,57 +460,14 @@ def extract_pins_from_html(html: str) -> List[Dict]:
                             pin_id = re.search(r"/pin/(\d+)/", pin_url)
                             if pin_id:
                                 # 提取图片URL
-                                image_urls = {
-                                    "original": item.get("contentUrl") or item.get("url"),
-                                    "width": item.get("width"),
-                                    "height": item.get("height")
-                                }
-                                # 尝试从thumbnailUrl获取不同尺寸
-                                if "thumbnailUrl" in item and isinstance(item["thumbnailUrl"], list):
-                                    for thumb_url in item["thumbnailUrl"]:
-                                        size_match = re.search(r"/(\d+)x", thumb_url)
-                                        if size_match:
-                                            image_urls[size_match.group(1)] = thumb_url
-
-                                pin_info = {
-                                    "id": pin_id.group(1),
-                                    "url": pin_url,
-                                    "title": item.get("name") or "",
-                                    "description": item.get("description") or "",
-                                    "image_urls": image_urls,
-                                    "largest_image_url": find_largest_image_url(image_urls),
-                                    "creator": {
-                                        "name": item["creator"].get("name") if "creator" in item and isinstance(item["creator"], dict) else "",
-                                        "url": item["creator"].get("url") if "creator" in item and isinstance(item["creator"], dict) else ""
-                                    },
-                                    "tags": item.get("keywords", [])
-                                }
-                                # 进一步丰富数据，特别是处理嵌套结构
-                                final_pin = enrich_pin_data_from_json({}, pin_info)
+                                final_pin = enrich_pin_data_from_json({"id": pin_id.group(1), "url": pin_url}, item)
                                 pins.append(final_pin)
                 # 兼容直接的ImageObject或Product数据
                 elif json_data.get("@type") == "ImageObject" or json_data.get("@type") == "Product":
                     pin_url = json_data.get("mainEntityOfPage") or json_data.get("url")
                     pin_id = re.search(r"/pin/(\d+)/", pin_url) if pin_url else ""
                     if pin_id:
-                        image_urls = {
-                            "original": json_data.get("contentUrl") or json_data.get("image") or json_data.get("url"),
-                            "width": json_data.get("width"),
-                            "height": json_data.get("height")
-                        }
-                        pin_info = {
-                            "id": pin_id.group(1),
-                            "url": pin_url,
-                            "title": json_data.get("name") or "",
-                            "description": json_data.get("description") or "",
-                            "image_urls": image_urls,
-                            "largest_image_url": find_largest_image_url(image_urls),
-                            "creator": {
-                                "name": json_data["creator"].get("name") if "creator" in json_data and isinstance(json_data["creator"], dict) else "",
-                                "url": json_data["creator"].get("url") if "creator" in json_data and isinstance(json_data["creator"], dict) else ""
-                            }
-                        }
-                        final_pin = enrich_pin_data_from_json({}, pin_info)
+                        final_pin = enrich_pin_data_from_json({"id": pin_id.group(1), "url": pin_url}, json_data)
                         pins.append(final_pin)
 
         except Exception as e:

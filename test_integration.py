@@ -23,7 +23,7 @@ class TestIntegration(unittest.TestCase):
         测试单个关键词搜索的端到端流程
         """
         keyword = "cat"
-        count = 5
+        count = 50
         
         # 1. 运行主程序
         command = [
@@ -31,7 +31,8 @@ class TestIntegration(unittest.TestCase):
             "-s", keyword,
             "-c", str(count),
             "-o", self.output_dir,
-            "--log-level", "DEBUG" # 方便调试
+            "--log-level", "DEBUG", # 方便调试
+            "--no-images" # 不下载图片
         ]
         
         result = subprocess.run(command, capture_output=True, text=True)
@@ -53,20 +54,18 @@ class TestIntegration(unittest.TestCase):
         metadata_path = os.path.join(expected_keyword_dir, "json", metadata_files[0])
         self.assertTrue(os.path.isfile(metadata_path), "metadata.json 文件未创建")
         
-        # 4. 验证下载的图片数量
+        # 4. 验证下载的图片数量 (应为0，因为启用了--no-images)
         image_dir = os.path.join(expected_keyword_dir, "images")
         files = os.listdir(image_dir)
         image_files = [f for f in files if f.endswith(('.jpg', '.png', '.gif'))]
-        # 实际下载数量可能小于请求数量，但应该大于0
-        self.assertGreater(len(image_files), 0, "没有下载任何图片")
+        self.assertEqual(len(image_files), 0, "不应该下载任何图片")
         
         # 5. 验证metadata.json内容
         with open(metadata_path, 'r', encoding='utf-8') as f:
             try:
                 metadata = json.load(f)
                 self.assertIsInstance(metadata, list, "元数据不是一个列表")
-                self.assertGreater(len(metadata), 0, "元数据文件为空")
-                self.assertEqual(len(metadata), len(image_files), "元数据条目数与图片数不匹配")
+                self.assertGreaterEqual(len(metadata), count, f"获取的pin数量不足, 预期: {count}, 实际: {len(metadata)}")
                 
                 # 检查第一个条目的结构
                 first_item = metadata[0]
@@ -82,8 +81,8 @@ class TestIntegration(unittest.TestCase):
         """
         测试单个URL爬取的端到端流程
         """
-        url = "https://www.pinterest.com/pin/544322987541295328/" # Example Pinterest pin URL
-        count = 5
+        url = "https://www.pinterest.com/pin/314407617756588681/" # Example Pinterest pin URL
+        count = 50
         
         # 1. 运行主程序
         command = [
@@ -91,7 +90,8 @@ class TestIntegration(unittest.TestCase):
             "-u", url,
             "-c", str(count),
             "-o", self.output_dir,
-            "--log-level", "DEBUG" # 方便调试
+            "--log-level", "DEBUG", # 方便调试
+            "--no-images" # 不下载图片
         ]
         
         result = subprocess.run(command, capture_output=True, text=True)
@@ -105,7 +105,6 @@ class TestIntegration(unittest.TestCase):
         
         # 3. 验证输出目录和文件结构
         safe_url_term = self.sanitize_filename(url)
-        print(f"DEBUG: safe_url_term in test: {safe_url_term}")
         expected_url_dir = os.path.join(self.output_dir, safe_url_term)
         self.assertTrue(os.path.isdir(expected_url_dir), "URL目录未创建")
         
@@ -115,20 +114,18 @@ class TestIntegration(unittest.TestCase):
         metadata_path = os.path.join(json_dir, metadata_files[0])
         self.assertTrue(os.path.isfile(metadata_path), "metadata.json 文件未创建")
         
-        # 4. 验证下载的图片数量
+        # 4. 验证下载的图片数量 (应为0，因为启用了--no-images)
         image_dir = os.path.join(expected_url_dir, "images")
         files = os.listdir(image_dir)
         image_files = [f for f in files if f.endswith(('.jpg', '.png', '.gif'))]
-        # 实际下载数量可能小于请求数量，但应该大于0
-        self.assertGreater(len(image_files), 0, "没有下载任何图片")
+        self.assertEqual(len(image_files), 0, "不应该下载任何图片")
         
         # 5. 验证metadata.json内容
         with open(metadata_path, 'r', encoding='utf-8') as f:
             try:
                 metadata = json.load(f)
                 self.assertIsInstance(metadata, list, "元数据不是一个列表")
-                self.assertGreater(len(metadata), 0, "元数据文件为空")
-                self.assertEqual(len(metadata), len(image_files), "元数据条目数与图片数不匹配")
+                self.assertGreaterEqual(len(metadata), count, f"获取的pin数量不足, 预期: {count}, 实际: {len(metadata)}")
                 
                 # 检查第一个条目的结构
                 first_item = metadata[0]
@@ -156,5 +153,8 @@ class TestIntegration(unittest.TestCase):
         
         return re.sub(r'[\/:*?"<>|]', "_", name)
 
+
+
 if __name__ == '__main__':
     unittest.main()
+

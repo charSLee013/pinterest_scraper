@@ -179,3 +179,21 @@ caches/*
 .idea/*
 
 output
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+.directory
+.file
+.folder
+.link
+.mouse
+.netscape
+
+.claude

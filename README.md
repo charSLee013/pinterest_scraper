@@ -1,126 +1,84 @@
-# 🎨 Pinterest 图片爬虫
-<p align="center">
-  <a href="./README.md"><img alt="简体中文版自述文件" src="https://img.shields.io/badge/简体中文-d9d9d9"></a>
-  <a href="./README_EN.md"><img alt="README in English" src="https://img.shields.io/badge/English-d9d9d9"></a>
-</p>
+# Pinterest Scraper
 
+This is a Python-based web scraper for downloading images and metadata from Pinterest. It uses Playwright for browser automation and can be configured to scrape based on keywords or direct URLs.
 
-> 一个简单高效的 Pinterest 图片爬虫工具，支持关键词搜索和 URL 爬取，让你的素材收集变得轻松愉快！
+## Features
 
-<div align="center">
-  <img src="assets/demo1.png" alt="爬取结果展示" width="800"/>
-  <br>
-  <br><br>
-  <img src="assets/demo2.png" width="600"/>
-  <br>
-  <em>一个晚上爬取了70w张图片</em>
-</div>
+- Scrape pins by search keyword
+- Scrape pins from a specific URL (e.g., a user's board)
+- Concurrent image downloading
+- Caching of scraped data to avoid re-scraping
+- Headless browser operation
+- Proxy support
+- Cookie-based authentication to bypass login walls
 
-## ✨ 特性
+## Installation
 
-- 🚀 基于 Playwright 的强大浏览器自动化
-- 🔍 支持关键词搜索和 URL 直接爬取
-- 🌊 支持无限滚动加载
-- 🚀 多关键词并发搜索
-- 📦 自动下载图片和元数据
-- 🎯 支持代理设置
-- 📝 详细的日志记录
-- 🛠️ 高度可配置
+1.  **Clone the repository:**
+    ```bash
+    git clone <repository_url>
+    cd pinterest_scraper
+    ```
 
-## 🚀 快速开始
+2.  **Install dependencies:**
+    It is recommended to use a virtual environment.
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+    pip install -r requirements.txt
+    ```
 
-### 环境要求
+3.  **Install Playwright browsers:**
+    The scraper uses Playwright's Chromium browser.
+    ```bash
+    playwright install chromium
+    ```
 
-- Python 3.10+
-- Playwright (自动管理 Chromium 等浏览器二进制文件)
+## Authentication with Cookies
 
-### 安装
+To scrape effectively and avoid being blocked by Pinterest's login wall, you need to use cookies from a logged-in session.
 
-推荐使用 [uv](https://github.com/astral-sh/uv) 进行环境管理：
+**How to get your `cookies.json` file:**
 
+1.  **Log in to Pinterest:**
+    Open your regular web browser (e.g., Chrome) and log in to your Pinterest account.
+
+2.  **Install a cookie exporter extension:**
+    Install a browser extension that can export cookies in the `Netscape` or `JSON` format. A recommended extension for Chrome is [Cookie-Editor](https://chrome.google.com/webstore/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm).
+
+3.  **Export your cookies:**
+    -   With the extension installed, navigate to `pinterest.com`.
+    -   Click the Cookie-Editor icon in your browser's toolbar.
+    -   Click the "Export" button in the extension's popup.
+    -   Choose "Export as JSON" and save the file.
+
+4.  **Save the file:**
+    -   Rename the downloaded file to `cookies.json`.
+    -   Place this `cookies.json` file in the root directory of the `pinterest_scraper` project.
+
+The scraper will automatically detect and use this file if it's named `cookies.json` and placed in the root directory.
+
+## Usage
+
+You can use the scraper via `main.py` with command-line arguments.
+
+**Example: Scrape by keyword**
 ```bash
-# 克隆项目
-git clone https://github.com/creeponsky/pinterest_scraper.git
-cd pinterest_scraper
-
-# 创建虚拟环境并安装依赖
-uv sync
+python main.py --query "nature photography" --limit 100
 ```
 
-### 使用方法
-
-0. 直接使用
-   我已经内置了一个测试的文件 `inputs/input_topics.txt` 可以直接运行项目来测试结果
-
+**Example: Scrape by URL**
 ```bash
-uv run python main.py
+python main.py --url "https://www.pinterest.com/pinterest/official-news/" --limit 50
 ```
 
-1. 关键词搜索：
+**Command-line arguments:**
 
-```bash
-uv run python main.py -s "nature landscape" -c 100
-```
-
-2. 多关键词并发搜索：
-
-```bash
-uv run python main.py -m "nature" "landscape" "city" -c 50
-```
-
-3. 从文件读取关键词：
-
-```bash
-uv run python main.py -f inputs/input_topics.txt -c 50
-```
-
-4. 从目录读取多个关键词文件：
-
-```bash
-uv run python main.py -d inputs/topics/ -c 50
-```
-
-5. 直接爬取 URL：
-
-```bash
-uv run python main.py -u "https://www.pinterest.com/pin/xxx" -c 50
-```
-
-### 参数说明
-
-- `-s, --search`: 单个搜索关键词
-- `-m, --multi-search`: 多个搜索关键词（并发执行）
-- `-f, --file`: 包含关键词的文件路径
-- `-d, --directory`: 包含关键词文件的目录
-- `-u, --urls`: Pinterest URL 列表
-- `-c, --count`: 每个关键词/URL 要下载的图片数量（默认：50）
-- `-o, --output`: 输出目录（默认：output）
-- `-p, --proxy`: 代理服务器（格式：http://user:pass@host:port）
-- `--max-concurrent`: 多关键词搜索时的最大并发数（默认：3）
-- `--no-images`: 仅获取元数据，不下载图片
-- `--debug`: 启用调试模式
-
-## 📁 项目结构
-
-- `main.py`: 主程序入口
-- `pinterest.py`: Pinterest 爬虫核心类
-- `browser.py`: 浏览器自动化管理 (由 Playwright 驱动)
-- `downloader.py`: 图片下载器
-- `concurrent_search.py`: 并发搜索实现
-- `parser.py`: 页面解析器
-- `utils.py`: 工具函数
-- `config.py`: 配置文件
-
-## ⚠️ 免责声明
-
-本项目仅供学习和研究使用，请勿用于商业用途。使用本项目时请遵守 Pinterest 的使用条款和相关法律法规。开发者不对使用本项目产生的任何问题负责。
-
-## 📝 开源协议
-
-MIT License
-
----
-
-<div align="center">
-  <sub>Built with ❤️ by <a href="https://github.com/creeponsky">CreepOnSky</a></sub>
-</div>
+-   `--query`: The search term to scrape for.
+-   `--url`: The Pinterest URL to scrape.
+-   `--limit`: The number of pins to scrape (default: 50).
+-   `--output`: The directory to save results to (default: `output`).
+-   `--proxy`: The proxy server to use (e.g., `http://user:pass@host:port`).
+-   `--cookie-file`: Path to a specific cookie file (overrides the default `cookies.json`).
+-   `--no-download`: Disable image downloading.
+-   `--debug`: Enable debug mode (saves screenshots and HTML).

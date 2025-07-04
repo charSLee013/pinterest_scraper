@@ -32,6 +32,7 @@ class PinterestScraper:
         download_images: bool = True,
         viewport_width: int = 1920,
         viewport_height: int = 1080,
+        cookie_path: Optional[str] = config.COOKIE_FILE_PATH,
     ):
         """初始化Pinterest爬虫
 
@@ -44,6 +45,7 @@ class PinterestScraper:
             download_images: 是否下载图片
             viewport_width: 浏览器视口宽度
             viewport_height: 浏览器视口高度
+            cookie_path: Cookie文件路径
         """
         self.output_dir = output_dir
         self.proxy = proxy
@@ -53,6 +55,7 @@ class PinterestScraper:
         self.download_images = download_images
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
+        self.cookie_path = cookie_path
 
         # 创建主输出目录
         os.makedirs(output_dir, exist_ok=True)
@@ -63,6 +66,7 @@ class PinterestScraper:
             timeout=timeout,
             viewport_width=viewport_width,
             viewport_height=viewport_height,
+            cookie_path=cookie_path,
         )
 
 
@@ -222,7 +226,10 @@ class PinterestScraper:
             pins = self.browser.simple_scroll_and_extract(
                 target_count=count,
                 extract_func=extract_pins_from_page,
+                new_item_selector="div[data-test-id='pin-card']",
+                max_scroll_attempts=config.MAX_SCROLL_ATTEMPTS
             )
+            logger.info(f"simple_scroll_and_extract 返回 {len(pins)} 个pins")
 
             # 保存结果
             # 获取当前日期
@@ -363,7 +370,10 @@ class PinterestScraper:
             pins = self.browser.simple_scroll_and_extract(
                 target_count=count,
                 extract_func=extract_pins_from_page,
+                new_item_selector="div[data-test-id='pin-card']",
+                max_scroll_attempts=config.MAX_SCROLL_ATTEMPTS
             )
+            logger.info(f"simple_scroll_and_extract 返回 {len(pins)} 个pins")
 
             # 保存结果
             # 获取当前日期

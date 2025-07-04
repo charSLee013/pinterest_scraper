@@ -29,13 +29,14 @@ SCROLL_PAUSE_TIME = 1.0  # 滚动暂停时间(秒)
 DEFAULT_TIMEOUT = 30  # 默认超时时间(秒)
 MAX_RETRIES = 3  # 最大重试次数
 RETRY_DELAY = 2.0  # 重试延迟(秒)
+MAX_SCROLL_ATTEMPTS = 5000  # 最大滚动尝试次数
 # 并发配置
 DEFAULT_THREAD_COUNT = 16  # 默认下载线程数
 MAX_THREAD_COUNT = 32  # 最大下载线程数
 
 # Chrome驱动配置
 CHROME_OPTIONS = [
-    "--headless=new",  # 注释的话可以看到页面来实时debug卡点在哪
+    "--headless=False",  # 注释的话可以看到页面来实时debug卡点在哪
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
@@ -47,3 +48,7 @@ CHROME_OPTIONS = [
 DEBUG_ENABLED = True
 DEBUG_HTTP_ENABLED = False  # 是否记录HTTP请求细节
 LOG_FORMAT = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+BLOCKED_RESOURCE_TYPES = ["image", "font"]
+
+# Cookie配置
+COOKIE_FILE_PATH = "cookies.json"
