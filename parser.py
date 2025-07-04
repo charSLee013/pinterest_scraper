@@ -423,63 +423,6 @@ def extract_pins_from_html(html: str) -> List[Dict]:
     soup = BeautifulSoup(html, "html.parser")
     pins = []
 
-    # 尝试从 <script type="application/ld+json"> 标签中提取JSON-LD数据
-    # 这通常在单个pin页面或富媒体页面中包含详细信息
-    json_ld_scripts = soup.find_all("script", type="application/ld+json")
-    for script in json_ld_scripts:
-        try:
-            json_data = None  # Initialize json_data
-            if script.string: # Ensure script.string is not None or empty
-                if isinstance(script.string, dict):
-                    json_data = script.string
-                elif isinstance(script.string, str):
-                    try:
-                        json_data = json.loads(script.string)
-                    except json.JSONDecodeError as e:
-                        logger.debug(f"JSON-LD解码失败: {e}")
-                        json_data = None # Ensure it's None on failure
-                else:
-                    logger.warning(f"Unexpected type for script.string: {type(script.string)}, skipping JSON-LD parsing.")
-                    continue  # Skip to next script immediately
-            else: # If script.string is None or empty
-                logger.warning(f"Script string is empty or None, skipping JSON-LD parsing for script: {script.prettify()[:200]}")
-                continue # Skip to next script immediately
-            
-
-            if json_data is None:  # Check if it's still None after parsing attempts
-                logger.warning(f"Failed to parse JSON-LD from script: {script.prettify()[:200] if script.string else 'None'}, skipping.")
-                continue  # Move to next script
-
-            # 检查是否为单个Pin的JSON-LD数据
-            if "@context" in json_data and "schema.org" in json_data["@context"]:
-                # Pinterest的单个pin页面通常包含Graph数据
-                if "@graph" in json_data:
-                    for item in json_data["@graph"]:
-                        if item.get("@type") == "ImageObject" and "mainEntityOfPage" in item:
-                            pin_url = item["mainEntityOfPage"]
-                            pin_id = re.search(r"/pin/(\d+)/", pin_url)
-                            if pin_id:
-                                # 提取图片URL
-                                final_pin = enrich_pin_data_from_json({"id": pin_id.group(1), "url": pin_url}, item)
-                                pins.append(final_pin)
-                # 兼容直接的ImageObject或Product数据
-                elif json_data.get("@type") == "ImageObject" or json_data.get("@type") == "Product":
-                    pin_url = json_data.get("mainEntityOfPage") or json_data.get("url")
-                    pin_id = re.search(r"/pin/(\d+)/", pin_url) if pin_url else ""
-                    if pin_id:
-                        final_pin = enrich_pin_data_from_json({"id": pin_id.group(1), "url": pin_url}, json_data)
-                        pins.append(final_pin)
-
-        except Exception as e:
-            logger.debug(f"解析JSON-LD数据失败: {e}")
-            continue
-
-    if pins:
-        logger.info(f"从JSON-LD中提取到 {len(pins)} 个pin数据")
-        return pins
-
-    # 如果没有从JSON-LD中提取到，继续尝试从HTML元素中提取
-    logger.info("未从JSON-LD中提取到pins，尝试从HTML元素中提取")
     # 尝试提取页面中的所有可能的pin元素
     for selector in config.PINTEREST_PIN_SELECTORS:
         pin_elements = soup.select(selector)

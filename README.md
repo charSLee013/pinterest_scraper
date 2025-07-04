@@ -12,6 +12,14 @@ This is a Python-based web scraper for downloading images and metadata from Pint
 - Proxy support
 - Cookie-based authentication to bypass login walls
 
+## Key Logic and Performance
+
+The scraper has been recently updated with significant improvements to its core logic and performance:
+
+-   **Smarter Scrolling Logic**: The scraper no longer stops prematurely. It employs an intelligent termination strategy based on dynamic conditions, such as detecting when no new content has been loaded for several consecutive scrolls or when the rate of new data drops significantly. This allows for much deeper and more comprehensive scraping sessions.
+-   **Optimized Parsing**: The parsing engine has been streamlined by removing its dependency on outdated and unreliable `JSON-LD` data structures. It now directly and robustly extracts data from primary HTML elements, making the process faster and less prone to errors from Pinterest's front-end changes.
+-   **Refined Logging System**: The logging output has been completely overhauled for clarity. The default `INFO` level now provides a clean, high-level summary of the scraping process, including statistics for each scroll (new items, duplicates, totals). Verbose debugging details are reserved for the `DEBUG` level, ensuring the console remains readable during normal operation.
+
 ## Installation
 
 1.  **Clone the repository:**

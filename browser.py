@@ -359,7 +359,7 @@ class Browser:
             return
         try:
             self.page.evaluate('window.scrollBy(0, window.innerHeight);')
-            logger.debug("执行PageDown滚动")
+            logger.info("执行页面向下滚动 (PageDown)")
         except Exception as e:
             logger.error(f"执行PageDown滚动失败: {e}")
 
@@ -420,6 +420,7 @@ class Browser:
 
         # 使用集合存储已处理的项目ID，避免重复
         processed_ids = set()
+        recent_new_counts = [] # 新增: 记录最近几次滚动的新增数量
 
         # 优化滚动速度，使用更大的滚动步长
         base_scroll_step = int(self.viewport_height * 0.8)  # 增加到80%的视口高度
@@ -443,33 +444,29 @@ class Browser:
 
             # 过滤并添加新项目
             new_added = 0
+            new_items_count = len(new_items)
+            
             for item in new_items:
                 item_id = item.get("id", "")
                 if item_id and item_id not in processed_ids:
                     processed_ids.add(item_id)
                     results.append(item)
                     new_added += 1
-                    logger.debug(f"新增项目: ID={item_id}, URL={item.get('url', 'N/A')}")
 
                     if len(results) >= target_count:
                         logger.info(f"已收集到足够数量: {len(results)}/{target_count}, 提前退出。")
                         break
-                elif item_id and item_id in processed_ids: # Existing item
-                    old_item = next((res_item for res_item in results if res_item.get("id") == item_id), None)
-                    if old_item:
-                        logger.debug(f"已处理项目 (重复): ID={item_id}, 已有URL:{old_item.get('url', '')}, 新的URL:{item.get('url', '')}")
-                else: # Item without ID
-                    logger.warning(f"发现缺少ID的项目: {item}")
+            
+            duplicate_count = new_items_count - new_added
+            logger.info(f"滚动 #{scroll_count}: 新增 {new_added}，重复 {duplicate_count} | 累计 {len(results)} / 目标 {target_count}")
 
-            logger.debug(f"这次滚动添加了 {new_added} 个新项目, 当前总收集: {len(results)}, 已处理ID: {len(processed_ids)}")
+            # 更新最近新增数量列表
+            recent_new_counts.append(new_added)
+            if len(recent_new_counts) > 3:
+                recent_new_counts.pop(0)
 
             # 检查是否有新的项目被添加
-            if new_added == 0 and len(new_items) > 0:
-                logger.debug(f"所有 {len(new_items)} 个提取的项目都是重复的。")
-                consecutive_no_new_data += 1
-                logger.debug(f"连续 {consecutive_no_new_data} 次滚动未获取新数据")
-            elif new_added == 0 and len(new_items) == 0:
-                logger.debug("当前页面未提取到任何项目。")
+            if new_added == 0:
                 consecutive_no_new_data += 1
                 logger.debug(f"连续 {consecutive_no_new_data} 次滚动未获取新数据")
             else:
@@ -496,123 +493,21 @@ class Browser:
                 stuck_count = 0
                 last_height = current_height
 
-            # 如果连续多次没有新数据，尝试不同的加载策略
-            if consecutive_no_new_data >= 3 and len(results) < target_count:
+            # 新的终止逻辑
+            if consecutive_no_new_data >= 3:
                 logger.warning(
-                    f"连续 {consecutive_no_new_data} 次未获取到新数据，尝试特殊滚动策略"
+                    f"连续 {consecutive_no_new_data} 次未获取到新数据，根据规则停止滚动。"
                 )
+                break
 
-                if consecutive_no_new_data == 3:
-                    # 策略1: 随机滚动步长
-                    random_step = random.randint(min_scroll_step, max_scroll_step)
-                    self.page.evaluate(f"window.scrollBy(0, {random_step});")
-                    time.sleep(2)
-
-                elif consecutive_no_new_data == 4:
-                    # 策略2: 向上滚动一段距离再向下滚动
-                    up_scroll = min(int(self.viewport_height * 1.5), scroll_position)
-                    self.page.evaluate(f"window.scrollBy(0, -{up_scroll});")
-                    time.sleep(2)
-                    self.page.evaluate(
-                        f"window.scrollBy(0, {up_scroll + 200});"
-                    )
-                    time.sleep(2)
-
-                elif consecutive_no_new_data == 5:
-                    # 策略3: 模拟真实用户滚动行为
-                    current_pos = scroll_position
-                    target_pos = min(
-                        current_pos + int(self.viewport_height * 2), current_height
-                    )
-                    steps = random.randint(5, 10)
-                    for i in range(steps):
-                        step = (target_pos - current_pos) // steps
-                        self.page.evaluate(f"window.scrollBy(0, {step});")
-                        time.sleep(random.uniform(0.1, 0.3))
-
-                elif consecutive_no_new_data == 6:
-                    # 策略4: 刷新页面并快速滚动到当前位置
-                    current_url = self.page.url
-                    self.page.reload()
-                    time.sleep(5)
-
-                    # 使用更自然的滚动行为回到当前位置
-                    scroll_position_int = int(scroll_position)
-                    steps = random.randint(8, 12)
-                    for i in range(steps):
-                        step = scroll_position_int // steps
-                        self.page.evaluate(
-                            f"window.scrollTo(0, {step * (i + 1)});"
-                        )
-                        time.sleep(random.uniform(0.2, 0.4))
-
-                elif consecutive_no_new_data == 7:
-                    # 策略5: 尝试点击"显示更多"按钮
-                    try:
-                        load_more_selectors = [
-                            "button[aria-label='更多想法']",
-                            "button:has-text('更多')",
-                            "button:has-text('加载更多')",
-                            "button:has-text('Show more')",
-                            "button:has-text('Load more')",
-                            "[data-test-id='scrollContainer'] button",
-                        ]
-
-                        for selector in load_more_selectors:
-                            try:
-                                elements = self.page.locator(selector).all()
-                                if elements:
-                                    logger.info(f"找到可能的加载更多按钮: {selector}")
-                                    elements[0].click()
-                                    time.sleep(3)
-                                    break
-                            except Exception as click_e:
-                                logger.debug(f"点击加载更多按钮失败 ({selector}): {click_e}")
-                                continue
-
-                        # 尝试执行JavaScript点击
-                        self.page.evaluate("""
-                            (function() {
-                                var buttons = document.querySelectorAll('button');
-                                for(var i=0; i<buttons.length; i++) {
-                                    if(buttons[i].innerText.includes('更多') || 
-                                       buttons[i].innerText.includes('more') ||
-                                       buttons[i].innerText.toLowerCase().includes('load')) {
-                                        buttons[i].click();
-                                        return true;
-                                    }
-                                }
-                                return false;
-                            })()
-                        """)
-                        time.sleep(3)
-                    except Exception as e:
-                        logger.debug(f"尝试点击加载更多按钮失败: {e}")
-
-                elif consecutive_no_new_data > 10:
-                    logger.warning(
-                        f"多次尝试后仍无法获取新数据，当前已收集 {len(results)} 项"
-                    )
-                    if consecutive_no_new_data > 40: # 提高阈值
-                        logger.warning("达到最大尝试次数，停止滚动")
-                        break # 达到最大尝试次数，停止滚动
-
-                continue
+            if scroll_count > 3 and len(recent_new_counts) == 3 and sum(recent_new_counts) < 5:
+                logger.warning(
+                    f"滚动次数超过3次，且最近3次新增数量 ({sum(recent_new_counts)}) 小于5，根据规则停止滚动。"
+                )
+                break
 
             # 执行常规滚动
             self.scroll_page_down()
-
-            # 显式等待新的Pin元素出现
-            try:
-                # 使用new_item_selector等待新元素，超时时间设置为DEFAULT_TIMEOUT的两倍
-                self.page.wait_for_selector(new_item_selector, state='attached', timeout=config.DEFAULT_TIMEOUT * 2 * 1000)
-                logger.debug(f"成功等待到新的Pin元素: {new_item_selector}")
-                # 如果成功等待到新元素，重置无新数据计数器
-                consecutive_no_new_data = 0
-            except Error as e: # Playwright's general Error class covers TimeoutError
-                logger.warning(f"等待新的Pin元素超时或失败 ({new_item_selector}): {e}")
-                # 如果等待失败，增加无新数据计数
-                consecutive_no_new_data += 1
 
             # 记录滚动位置
             scroll_position = self.page.evaluate("window.pageYOffset;")
