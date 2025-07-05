@@ -36,7 +36,7 @@ MAX_THREAD_COUNT = 32  # 最大下载线程数
 
 # Chrome驱动配置
 CHROME_OPTIONS = [
-    "--headless=False",  # 注释的话可以看到页面来实时debug卡点在哪
+    "--headless=True",  # 注释的话可以看到页面来实时debug卡点在哪
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
@@ -52,3 +52,19 @@ BLOCKED_RESOURCE_TYPES = ["image", "font"]
 
 # Cookie配置
 COOKIE_FILE_PATH = "cookies.json"
+
+# 网络分析配置
+NETWORK_ANALYSIS = {
+    'enabled': True,
+    'output_directory': 'network_analysis_results',
+    'request_timeout': 30,
+    'max_concurrent_requests': 10,
+    'api_endpoints_to_monitor': [
+        'api.pinterest.com',
+        'www.pinterest.com/resource/',
+        'pinterest.com/resource/'
+    ],
+    'response_size_limit': 10 * 1024 * 1024,  # 10MB
+    'save_response_bodies': True,
+    'log_level': 'INFO'
+}
