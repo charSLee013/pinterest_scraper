@@ -12,7 +12,7 @@ from typing import Dict, List
 from bs4 import BeautifulSoup
 from loguru import logger
 
-import config
+from . import config
 
 
 def extract_pin_id_from_html(html_element: str) -> str:
@@ -470,5 +470,5 @@ def extract_pins_from_html(html: str) -> List[Dict]:
                 logger.debug(f"从脚本提取JSON数据失败: {e}")
                 continue
 
-    logger.info(f"从HTML中提取到 {len(pins)} 个pin数据")
+    # logger.info(f"从HTML中提取到 {len(pins)} 个pin数据")
     return pins

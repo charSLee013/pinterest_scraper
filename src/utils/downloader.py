@@ -15,8 +15,8 @@ import requests
 from loguru import logger
 from tqdm import tqdm
 
-import config
-import utils
+from ..core import config
+from . import utils
 
 
 def generate_headers() -> Dict:
@@ -519,3 +519,91 @@ def download_images(
     images_dir = os.path.join(output_dir, "images")
 
     return download_images_with_cache(pins, images_dir, prefix, cache_dir, max_workers)
+
+
+def download_images_batch(download_tasks: List[Dict], max_workers: int = 0) -> int:
+    """批量下载图片 - 重构后的简化接口
+
+    Args:
+        download_tasks: 下载任务列表，每个任务包含 {'url': str, 'path': str, 'pin_id': str}
+        max_workers: 最大并发数，0表示自动设置
+
+    Returns:
+        成功下载的图片数量
+    """
+    if not download_tasks:
+        logger.warning("没有下载任务")
+        return 0
+
+    logger.info(f"开始批量下载 {len(download_tasks)} 张图片")
+
+    # 设置并发数
+    if max_workers <= 0:
+        max_workers = min(16, os.cpu_count() * 2)
+
+    success_count = 0
+
+    # 下载函数
+    def download_single_task(task):
+        try:
+            url = task.get('url')
+            filepath = task.get('path')
+            pin_id = task.get('pin_id', 'unknown')
+
+            if not url or not filepath:
+                logger.warning(f"任务参数不完整: {task}")
+                return False
+
+            # 使用现有的下载函数
+            success = download_image(
+                url=url,
+                filepath=filepath,
+                headers=generate_headers(),
+                timeout=config.DEFAULT_TIMEOUT,
+                max_retries=config.MAX_RETRIES
+            )
+
+            if success:
+                logger.debug(f"成功下载: {pin_id}")
+            else:
+                logger.warning(f"下载失败: {pin_id}")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"下载任务出错: {e}")
+            return False
+
+    # 使用线程池并发下载
+    try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_task = {
+                executor.submit(download_single_task, task): task
+                for task in download_tasks
+            }
+
+            # 收集结果
+            for future in as_completed(future_to_task):
+                try:
+                    if future.result():
+                        success_count += 1
+                except Exception as e:
+                    logger.error(f"下载任务执行出错: {e}")
+
+                # 添加小延迟，避免请求过快
+                time.sleep(0.1)
+
+    except ImportError:
+        # 如果没有concurrent.futures，使用顺序下载
+        logger.warning("使用顺序下载模式")
+        for task in download_tasks:
+            if download_single_task(task):
+                success_count += 1
+            time.sleep(0.2)  # 顺序下载时增加延迟
+
+    logger.info(f"批量下载完成: {success_count}/{len(download_tasks)} 成功")
+    return success_count

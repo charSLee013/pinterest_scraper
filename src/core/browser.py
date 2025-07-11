@@ -17,7 +17,7 @@ from fake_useragent import UserAgent
 from loguru import logger
 from patchright.sync_api import sync_playwright, Page, BrowserContext, Error
 
-import config
+from . import config
 
 
 class Browser:
@@ -30,6 +30,7 @@ class Browser:
         viewport_width: int = 1920,
         viewport_height: int = 1080,
         cookie_path: Optional[str] = None,
+        headless: bool = False,
     ):
         """初始化浏览器
 
@@ -39,6 +40,7 @@ class Browser:
             viewport_width: 浏览器视口宽度
             viewport_height: 浏览器视口高度
             cookie_path: Cookie文件路径
+            headless: 是否以无头模式启动浏览器
         """
         self.playwright_instance = None
         self.browser = None
@@ -54,6 +56,7 @@ class Browser:
         self.monitoring_thread = None
         self.screenshot_dir = None
         self.browser_type = 'chromium'
+        self.headless = headless
 
     def start_monitoring(self, session_id):
         """启动浏览器监控线程
@@ -151,12 +154,12 @@ class Browser:
 
         try:
             logger.info("初始化浏览器...")
-            self.start_monitoring(session_id=1)
+            # self.start_monitoring(session_id=1) # 暂时禁用监控以减少干扰
 
             self.playwright_instance = sync_playwright().start()
             launch_options = {
-                "headless": True if "--headless=new" in config.CHROME_OPTIONS else False,
-                "args": [opt for opt in config.CHROME_OPTIONS if "--headless" not in opt],
+                "headless": self.headless,
+                "args": config.CHROME_OPTIONS,
             }
 
             # 设置代理(如果有)
@@ -246,9 +249,25 @@ class Browser:
             logger.info(f"访问URL: {url}")
             self.page.goto(url, timeout=self.timeout * 1000, wait_until="domcontentloaded")
             return True
-        except Exception as e:
-            logger.error(f"访问URL失败: {e}")
+        except Error as e:
+            logger.error(f"访问 {url} 失败: {e}")
             return False
+
+    def wait_for_load_state(self, state: str = 'domcontentloaded', timeout: int = 0):
+        """等待页面加载状态
+
+        Args:
+            state: 等待的状态，可以是 'load', 'domcontentloaded', 'networkidle'
+            timeout: 等待超时时间（毫秒）
+        """
+        if not self.page:
+            return
+        try:
+            actual_timeout = timeout if timeout > 0 else self.timeout * 1000
+            logger.info(f"等待页面状态: {state}, 超时: {actual_timeout}ms")
+            self.page.wait_for_load_state(state, timeout=actual_timeout)
+        except Error as e:
+            logger.warning(f"等待页面状态 '{state}' 时发生超时或错误: {e}")
 
     def wait_for_element(self, selector: str, timeout: int = 10) -> bool:
         """等待元素出现

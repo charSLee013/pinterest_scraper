@@ -26,6 +26,7 @@ ORIGINAL_SIZE_MARKER = "originals"
 
 # 等待和重试设置
 SCROLL_PAUSE_TIME = 1.0  # 滚动暂停时间(秒)
+INITIAL_WAIT_TIME = 3.0  # 初始页面加载等待时间(秒)
 DEFAULT_TIMEOUT = 30  # 默认超时时间(秒)
 MAX_RETRIES = 3  # 最大重试次数
 RETRY_DELAY = 2.0  # 重试延迟(秒)
