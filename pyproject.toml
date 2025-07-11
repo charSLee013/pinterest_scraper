@@ -26,6 +26,7 @@ dependencies = [
     "loguru>=0.7.0",
     "python-dotenv>=1.0.0",
     "fake-useragent>=1.4.0",
+    "loguru",
 
     # 网络分析模块依赖
     "aiofiles>=23.2.0",
