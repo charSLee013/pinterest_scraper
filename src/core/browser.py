@@ -160,6 +160,8 @@ class Browser:
             launch_options = {
                 "headless": self.headless,
                 "args": config.CHROME_OPTIONS,
+                # 使用chrome
+                "channel": "chrome",
             }
 
             # 设置代理(如果有)

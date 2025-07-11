@@ -83,7 +83,9 @@ class BrowserManager:
                     "--disable-gpu",
                     "--disable-extensions",
                     "--disable-infobars",
-                ]
+                ],
+                # 使用chrome
+                "channel": "chrome",
             }
             
             # 代理配置
