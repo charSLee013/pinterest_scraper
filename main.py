@@ -68,14 +68,31 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="启用调试模式（显示浏览器）"
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="启用详细输出（开发模式）"
+    )
 
     return parser
 
 
-def setup_logger(debug: bool = False):
-    """设置极简的日志配置"""
+def setup_logger(debug: bool = False, verbose: bool = False):
+    """设置三层日志配置
+
+    Args:
+        debug: 启用DEBUG级别（调试层）
+        verbose: 启用INFO级别（开发层）
+        默认: WARNING级别（用户层）
+    """
     logger.remove()
-    level = "DEBUG" if debug else "INFO"
+    if debug:
+        level = "DEBUG"
+    elif verbose:
+        level = "INFO"
+    else:
+        level = "WARNING"
+
     logger.add(
         sys.stderr,
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
@@ -89,12 +106,10 @@ async def async_main():
     args = parser.parse_args()
 
     # 设置日志
-    setup_logger(args.debug)
+    setup_logger(args.debug, args.verbose)
 
     scraper = None
     try:
-        logger.info("Pinterest爬虫启动")
-
         # 创建爬虫实例
         scraper = PinterestScraper(
             output_dir=args.output,
@@ -112,11 +127,11 @@ async def async_main():
 
         # 输出结果
         if pins:
-            print(f"采集完成: {len(pins)} 个Pin -> {args.output}")
+            logger.warning(f"采集完成: {len(pins)} 个Pin -> {args.output}")
 
             # 如果启用了图片下载，等待所有下载完成
             if not args.no_images:
-                logger.info("开始异步下载图片...")
+                logger.debug("开始异步下载图片...")
 
                 # 获取下载统计信息
                 stats = scraper.get_stats()
@@ -125,7 +140,7 @@ async def async_main():
                     total_tasks = download_stats.get('total_tasks', 0)
 
                     if total_tasks > 0:
-                        logger.info(f"开始下载 {total_tasks} 张图片...")
+                        logger.debug(f"开始下载 {total_tasks} 张图片...")
 
                         # 等待所有下载完成
                         try:
@@ -137,16 +152,16 @@ async def async_main():
                                 final_download_stats = final_stats['download_stats']
                                 completed = final_download_stats.get('completed', 0)
                                 failed = final_download_stats.get('failed', 0)
-                                logger.info(f"图片下载完成: {completed} 成功, {failed} 失败")
+                                logger.warning(f"图片下载完成: {completed} 成功, {failed} 失败")
                             else:
-                                logger.info("图片下载完成")
+                                logger.warning("图片下载完成")
 
                         except KeyboardInterrupt:
                             logger.info("用户中断下载")
                         except Exception as e:
                             logger.error(f"下载过程中出错: {e}")
                     else:
-                        logger.info("没有图片需要下载")
+                        logger.debug("没有图片需要下载")
         else:
             logger.error("采集失败，未获取到数据")
             return 1
@@ -164,9 +179,9 @@ async def async_main():
         # 确保资源清理
         if scraper:
             try:
-                logger.info("正在清理资源...")
+                logger.debug("正在清理资源...")
                 await scraper.close()
-                logger.info("资源清理完成")
+                logger.debug("资源清理完成")
             except Exception as e:
                 logger.error(f"资源清理时发生错误: {e}")
 

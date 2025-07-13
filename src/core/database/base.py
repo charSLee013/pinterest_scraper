@@ -73,7 +73,7 @@ class DatabaseManager:
         from .schema import Pin, DownloadTask, ScrapingSession, CacheMetadata
         
         Base.metadata.create_all(bind=self.engine)
-        logger.info("数据库表创建完成")
+        logger.debug("数据库表创建完成")
     
     @contextmanager
     def get_session(self) -> Generator[Session, None, None]:

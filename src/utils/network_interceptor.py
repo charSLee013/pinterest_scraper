@@ -11,6 +11,7 @@ import json
 import os
 import time
 import threading
+import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional, Callable, Any, Union
 from urllib.parse import urlparse, parse_qs
@@ -413,6 +414,10 @@ class NetworkInterceptor:
         # 线程安全锁
         self._lock = threading.Lock()
 
+        # 资源清理跟踪
+        self._cleanup_handlers = []
+        self._is_cleaned_up = False
+
         # 进度条（如果设置了目标数量）
         self.pbar = None
         if target_count > 0:
@@ -500,12 +505,12 @@ class NetworkInterceptor:
         
         return request_info
     
-    def _extract_response_info(self, response: Response) -> Dict:
+    async def _extract_response_info(self, response: Response) -> Dict:
         """提取响应信息
-        
+
         Args:
             response: Playwright响应对象
-            
+
         Returns:
             响应信息字典
         """
@@ -530,7 +535,7 @@ class NetworkInterceptor:
         # 尝试提取JSON数据
         try:
             if "application/json" in response_info["content_type"]:
-                json_data = response.json()
+                json_data = await response.json()
                 response_info["json_data"] = json_data
                 
                 # 分析JSON结构中的关键信息
@@ -595,7 +600,7 @@ class NetworkInterceptor:
             import traceback
             logger.error(f"错误详情: {traceback.format_exc()}")
     
-    def _handle_response(self, response: Response):
+    async def _handle_response(self, response: Response):
         """处理响应事件 - 增强版，支持Pin数据提取
 
         Args:
@@ -606,7 +611,7 @@ class NetworkInterceptor:
             is_pinterest_api = self._is_pinterest_api_request(response.url)
             logger.debug(f"URL: {response.url}，是否是Pinterest API响应: {is_pinterest_api}")
             if is_pinterest_api:
-                response_info = self._extract_response_info(response)
+                response_info = await self._extract_response_info(response)
 
                 # 线程安全地处理响应
                 with self._lock:
@@ -1007,3 +1012,44 @@ class NetworkInterceptor:
         if self.pbar:
             self.pbar.close()
             self.pbar = None
+
+    async def cleanup(self):
+        """清理资源，注销事件处理器"""
+        if self._is_cleaned_up:
+            return
+
+        try:
+            # 关闭进度条
+            self.close_progress_bar()
+
+            # 清理缓存
+            self.clear_cache()
+
+            # 执行所有清理函数
+            for cleanup_func in self._cleanup_handlers:
+                try:
+                    if asyncio.iscoroutinefunction(cleanup_func):
+                        await cleanup_func()
+                    else:
+                        cleanup_func()
+                except Exception as e:
+                    logger.debug(f"清理处理器时出错: {e}")
+
+            self._cleanup_handlers.clear()
+            self._is_cleaned_up = True
+            logger.debug("NetworkInterceptor资源已清理")
+        except Exception as e:
+            logger.error(f"NetworkInterceptor清理失败: {e}")
+
+    async def __aenter__(self):
+        """异步上下文管理器入口"""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """异步上下文管理器退出"""
+        await self.cleanup()
+
+    def add_cleanup_handler(self, handler):
+        """添加清理处理器"""
+        if not self._is_cleaned_up:
+            self._cleanup_handlers.append(handler)

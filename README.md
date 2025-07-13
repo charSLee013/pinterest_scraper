@@ -102,11 +102,41 @@ pins = await scraper.scrape(query="cats", count=500)
 git clone <repository-url>
 cd pinterest_scraper
 
-# 安装依赖
-pip install -e .
+# 方法一：一键安装（推荐）
+python setup.py
 
-# 或使用uv（推荐）
+# 方法二：手动安装
 uv sync
+uv run python -m patchright install
+
+# 方法三：使用pip
+pip install -e .
+playwright install chromium
+```
+
+### 🔧 浏览器安装问题解决
+
+如果遇到以下错误：
+```
+BrowserType.launch: Executable doesn't exist at /root/.cache/ms-playwright/chromium_headless_shell-1169/chrome-linux/headless_shell
+```
+
+**解决方案**：
+```bash
+# 使用uv环境安装浏览器
+uv run python -m patchright install
+
+# 或者使用安装脚本
+uv run python install_browsers.py
+
+# 验证安装
+uv run python -c "
+from patchright.sync_api import sync_playwright
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    print('浏览器安装成功!')
+    browser.close()
+"
 ```
 
 ## 🔧 配置
@@ -267,6 +297,91 @@ python main.py --query "art" --count 200 --no-images
 
 # 调试模式
 python main.py --query "nature" --count 10 --debug
+
+# 详细输出模式（开发者模式）
+python main.py --query "nature" --count 10 --verbose
+
+# 极简输出模式（默认）
+python main.py --query "nature" --count 10
+```
+
+## 📋 三层日志系统
+
+系统采用智能的三层日志架构，为不同用户群体提供合适的信息详细程度：
+
+### 🎯 用户层 (默认模式)
+**适用场景**: 普通用户日常使用
+```bash
+python main.py --query "cats" --count 100
+```
+**输出示例**:
+```
+采集进度: 100pins [00:25, 4.0pins/s]
+下载图片: 100/100 [100%] | 1.68s/img | ✓100 ❌0
+采集完成: 100 个Pin -> output
+图片下载完成: 100 成功, 0 失败
+```
+
+### 🔧 开发层 (详细模式)
+**适用场景**: 开发者调试和技术分析
+```bash
+python main.py --query "cats" --count 100 --verbose
+```
+**输出示例**:
+```
+12:30:45 | INFO | 数据库初始化完成: output\cats\pinterest.db
+12:30:45 | INFO | 开始智能采集，目标: 100 个去重后唯一Pin
+12:30:45 | INFO | 使用统一的hybrid混合策略
+12:30:45 | INFO | 异步下载器启动完成，15 个工作协程
+采集进度: 100pins [00:25, 4.0pins/s]
+下载图片: 100/100 [100%] | 1.68s/img | ✓100 ❌0
+12:31:10 | INFO | 所有下载任务已完成
+采集完成: 100 个Pin -> output
+图片下载完成: 100 成功, 0 失败
+```
+
+### 🐛 调试层 (完整模式)
+**适用场景**: 深度调试和问题排查
+```bash
+python main.py --query "cats" --count 100 --debug
+```
+**输出示例**:
+```
+12:30:44 | DEBUG | Pinterest爬虫初始化完成
+12:30:44 | DEBUG | 开始Pinterest数据采集
+12:30:44 | DEBUG | 参数: query=cats, url=None, count=100
+12:30:45 | DEBUG | 数据库表创建完成
+12:30:45 | DEBUG | 创建关键词数据库管理器: cats -> output\cats\pinterest.db
+12:30:45 | INFO  | 开始智能采集，目标: 100 个去重后唯一Pin
+12:30:45 | INFO  | 使用统一的hybrid混合策略
+12:30:45 | DEBUG | 搜索阶段滚动策略: 连续10次无新数据停止，最大滚动300次
+... (完整技术细节)
+采集完成: 100 个Pin -> output
+图片下载完成: 100 成功, 0 失败
+```
+
+### 📊 日志级别对比
+
+| 模式 | 命令行参数 | 日志级别 | 适用用户 | 信息量 |
+|------|------------|----------|----------|--------|
+| **用户层** | 无参数 | WARNING | 普通用户 | 极简 |
+| **开发层** | `--verbose` | INFO | 开发者 | 适中 |
+| **调试层** | `--debug` | DEBUG | 技术专家 | 完整 |
+
+### 🎛️ 自定义日志控制
+
+```python
+# Python API中的日志控制
+from src.core.pinterest_scraper import PinterestScraper
+
+# 极简模式（推荐给普通用户）
+scraper = PinterestScraper()  # 默认WARNING级别
+
+# 开发模式（推荐给开发者）
+scraper = PinterestScraper(log_level="INFO")
+
+# 调试模式（推荐给技术专家）
+scraper = PinterestScraper(log_level="DEBUG")
 ```
 
 ## 🛡️ 智能反爬虫机制

@@ -85,7 +85,7 @@ class DatabaseManagerFactory:
                     # 缓存管理器实例
                     cls._managers[cache_key] = manager
                     
-                    logger.info(f"创建关键词数据库管理器: {keyword} -> {db_path}")
+                    logger.debug(f"创建关键词数据库管理器: {keyword} -> {db_path}")
                     
                 except Exception as e:
                     logger.error(f"创建数据库管理器失败: {keyword}, 错误: {e}")

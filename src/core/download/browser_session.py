@@ -68,7 +68,7 @@ class BrowserSessionManager:
             是否成功初始化
         """
         try:
-            logger.info("正在启动浏览器获取真实会话...")
+            logger.debug("正在启动浏览器获取真实会话...")
             
             # 创建浏览器管理器 - 使用Chrome和headless模式
             self.browser_manager = BrowserManager(
@@ -94,7 +94,7 @@ class BrowserSessionManager:
             # 提取会话信息
             await self._extract_session_info()
             
-            logger.info("浏览器会话初始化完成")
+            logger.debug("浏览器会话初始化完成")
             return True
             
         except Exception as e:
@@ -223,7 +223,7 @@ class BrowserSessionManager:
         if self.browser_manager:
             await self.browser_manager.stop()
             self.browser_manager = None
-            logger.info("浏览器会话已关闭")
+            logger.debug("浏览器会话已关闭")
     
     def save_session_to_file(self, filepath: str = "browser_session.json"):
         """保存会话信息到文件"""
@@ -237,7 +237,7 @@ class BrowserSessionManager:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(session_data, f, indent=2, ensure_ascii=False)
             
-            logger.info(f"会话信息已保存到: {filepath}")
+            logger.debug(f"会话信息已保存到: {filepath}")
             
         except Exception as e:
             logger.error(f"保存会话信息失败: {e}")

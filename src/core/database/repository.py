@@ -178,7 +178,7 @@ class SQLiteRepository:
                 )
                 session.add(scraping_session)
                 
-                logger.info(f"创建采集会话: {session_id}, 查询: {query}")
+                logger.debug(f"创建采集会话: {session_id}, 查询: {query}")
                 return session_id
                 
         except Exception as e:

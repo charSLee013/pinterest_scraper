@@ -274,9 +274,9 @@ class SmartScraper:
         logger.info(f"第一阶段：关键词搜索 - {search_url}")
         logger.info(f"第一阶段目标: {target_count} 个去重后唯一Pin")
 
-        # 第一阶段直接使用用户指定的目标数量，设置合理的安全下限
-        max_first_phase = max(target_count, 100)  # 使用target_count，最小100作为安全下限
-        base_pins = await self._search_phase_scrape(search_url, max_first_phase)
+        # 第一阶段直接使用用户指定的目标数量
+        # 移除硬编码的100个Pin下限，严格按照用户指定数量采集
+        base_pins = await self._search_phase_scrape(search_url, target_count)
 
         if len(base_pins) >= target_count:
             logger.info(f"第一阶段已达到目标，获得 {len(base_pins)} 个Pin")
@@ -379,67 +379,69 @@ class SmartScraper:
         """
         pin_url = f"https://www.pinterest.com/pin/{pin_id}/"
 
-        interceptor = NetworkInterceptor(max_cache_size=max_count * 2, verbose=False, target_count=0)
-        browser = BrowserManager(
-            proxy=self.proxy,
-            timeout=30,
-            cookie_path=self.cookie_path,
-            headless=True,
-            enable_network_interception=True
-        )
+        # 使用异步上下文管理器确保资源正确清理
+        async with NetworkInterceptor(max_cache_size=max_count * 2, verbose=False, target_count=0) as interceptor:
+            browser = BrowserManager(
+                proxy=self.proxy,
+                timeout=30,
+                cookie_path=self.cookie_path,
+                headless=True,
+                enable_network_interception=True
+            )
 
-        try:
-            if not await browser.start():
+            try:
+                if not await browser.start():
+                    return []
+
+                browser.add_request_handler(interceptor._handle_request)
+                browser.add_response_handler(interceptor._handle_response)
+
+                if not await browser.navigate(pin_url):
+                    return []
+
+                time.sleep(2)
+
+                # 滚动获取相关推荐，直到连续3次无新数据
+                consecutive_no_new = 0
+                max_consecutive = 3
+                scroll_count = 0
+                max_scrolls = 20  # 最大滚动次数
+
+                while (len(interceptor.extracted_pins) < max_count and
+                       consecutive_no_new < max_consecutive and
+                       scroll_count < max_scrolls):
+
+                    pins_before = len(interceptor.extracted_pins)
+
+                    # 滚动页面
+                    await browser.page.evaluate("window.scrollBy(0, window.innerHeight)")
+                    time.sleep(1.5)
+                    scroll_count += 1
+
+                    # 等待页面加载
+                    try:
+                        await browser.page.wait_for_load_state('networkidle', timeout=3000)
+                    except:
+                        pass
+
+                    pins_after = len(interceptor.extracted_pins)
+
+                    if pins_after > pins_before:
+                        consecutive_no_new = 0
+                    else:
+                        consecutive_no_new += 1
+
+                result_pins = list(interceptor.extracted_pins)[:max_count]
+                logger.debug(f"Pin {pin_id} 详情页采集: {len(result_pins)} 个相关Pin (滚动 {scroll_count} 次)")
+
+                return result_pins
+
+            except Exception as e:
+                logger.debug(f"Pin详情页采集出错: {e}")
                 return []
-
-            browser.add_request_handler(interceptor._handle_request)
-            browser.add_response_handler(interceptor._handle_response)
-
-            if not await browser.navigate(pin_url):
-                return []
-
-            time.sleep(2)
-
-            # 滚动获取相关推荐，直到连续3次无新数据
-            consecutive_no_new = 0
-            max_consecutive = 3
-            scroll_count = 0
-            max_scrolls = 20  # 最大滚动次数
-
-            while (len(interceptor.extracted_pins) < max_count and
-                   consecutive_no_new < max_consecutive and
-                   scroll_count < max_scrolls):
-
-                pins_before = len(interceptor.extracted_pins)
-
-                # 滚动页面
-                await browser.page.evaluate("window.scrollBy(0, window.innerHeight)")
-                time.sleep(1.5)
-                scroll_count += 1
-
-                # 等待页面加载
-                try:
-                    await browser.page.wait_for_load_state('networkidle', timeout=3000)
-                except:
-                    pass
-
-                pins_after = len(interceptor.extracted_pins)
-
-                if pins_after > pins_before:
-                    consecutive_no_new = 0
-                else:
-                    consecutive_no_new += 1
-
-            result_pins = list(interceptor.extracted_pins)[:max_count]
-            logger.debug(f"Pin {pin_id} 详情页采集: {len(result_pins)} 个相关Pin (滚动 {scroll_count} 次)")
-
-            return result_pins
-
-        except Exception as e:
-            logger.debug(f"Pin详情页采集出错: {e}")
-            return []
-        finally:
-            await browser.stop()
+            finally:
+                await browser.stop()
+                # NetworkInterceptor会在async with退出时自动清理
 
     async def _scrape_pin_detail(self, pin_id: str, max_count: int = 50) -> List[Dict]:
         """采集单个Pin详情页的相关推荐 - 兼容性方法"""
@@ -534,7 +536,7 @@ class SmartScraper:
             max_scrolls = max(target_count * 3, min_scrolls)
             no_new_data_limit = 10
 
-            logger.info(f"搜索阶段滚动策略: 连续{no_new_data_limit}次无新数据停止，最大滚动{max_scrolls}次")
+            logger.debug(f"搜索阶段滚动策略: 连续{no_new_data_limit}次无新数据停止，最大滚动{max_scrolls}次")
 
             # 滚动收集
             pins = await browser.scroll_and_collect(

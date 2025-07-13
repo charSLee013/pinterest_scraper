@@ -55,8 +55,8 @@ class DownloadTaskManager:
         
         # 处理数据库中的待下载任务
         await self._process_pending_tasks()
-        
-        logger.info("下载任务管理器启动完成")
+
+        logger.debug("下载任务管理器启动完成")
     
     async def stop(self):
         """停止任务管理器"""
@@ -65,7 +65,6 @@ class DownloadTaskManager:
         
         await self.downloader.stop()
         self.started = False
-        logger.info("下载任务管理器已停止")
     
     async def schedule_pin_downloads(self, pins: List[Dict[str, Any]], output_dir: str) -> int:
         """为Pin列表调度下载任务 - 基于文件系统状态的智能恢复下载
@@ -136,10 +135,10 @@ class DownloadTaskManager:
             scheduled_count += 1
 
         # 详细的状态报告
-        logger.info(f"下载状态分析完成:")
-        logger.info(f"  已存在图片: {len(existing_images)} 个")
-        logger.info(f"  需要下载: {len(missing_images)} 个")
-        logger.info(f"  调度下载任务: {scheduled_count} 个")
+        logger.debug(f"下载状态分析完成:")
+        logger.debug(f"  已存在图片: {len(existing_images)} 个")
+        logger.debug(f"  需要下载: {len(missing_images)} 个")
+        logger.debug(f"  调度下载任务: {scheduled_count} 个")
 
         if missing_images:
             logger.debug(f"缺失的图片Pin ID: {missing_images[:10]}{'...' if len(missing_images) > 10 else ''}")
@@ -283,7 +282,7 @@ class DownloadTaskManager:
             logger.debug("没有待下载的任务")
             return
 
-        logger.info(f"发现 {len(pending_tasks)} 个待下载任务")
+        logger.debug(f"发现 {len(pending_tasks)} 个待下载任务")
 
         # 只处理那些没有被其他方式调度的任务
         # 这里可以添加更复杂的逻辑来避免重复调度

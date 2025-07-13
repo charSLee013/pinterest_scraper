@@ -88,7 +88,7 @@ class PinterestScraper:
             debug=debug
         )
 
-        logger.info("Pinterest爬虫初始化完成")
+        logger.debug("Pinterest爬虫初始化完成")
 
     async def scrape(
         self,
@@ -110,8 +110,8 @@ class PinterestScraper:
             logger.error("必须提供query或url参数")
             return []
 
-        logger.info(f"开始Pinterest数据采集")
-        logger.info(f"参数: query={query}, url={url}, count={count}")
+        logger.debug(f"开始Pinterest数据采集")
+        logger.debug(f"参数: query={query}, url={url}, count={count}")
 
         # 设置工作目录
         work_name = utils.sanitize_filename(query or url.split('/')[-1] or 'scrape')
@@ -280,7 +280,7 @@ class PinterestScraper:
         downloaded_images = sum(1 for pin in pins if pin.get('downloaded', False))
         unique_creators = len(set(pin.get('creator', {}).get('name', 'Unknown') for pin in pins))
 
-        logger.info(f"统计: {total_pins} pins, {downloaded_images} 图片, {unique_creators} 创作者")
+        logger.debug(f"统计: {total_pins} pins, {downloaded_images} 图片, {unique_creators} 创作者")
 
     def get_stats(self) -> Dict:
         """获取采集器统计信息"""

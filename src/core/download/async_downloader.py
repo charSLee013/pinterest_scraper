@@ -386,7 +386,7 @@ class AsyncImageDownloader:
                 dynamic_ncols=True,
                 ascii=False
             )
-            logger.info(f"开始下载 {total_tasks} 张图片...")
+            logger.debug(f"开始下载 {total_tasks} 张图片...")
 
     async def _update_progress_bar(self, success: bool):
         """更新进度条
@@ -765,7 +765,6 @@ class AsyncImageDownloader:
                 self.progress_bar = None
 
             logger.info("所有下载任务已完成")
-            logger.info(f"图片下载完成: {self.stats['completed']} 成功, {self.stats['failed']} 失败")
         except asyncio.TimeoutError:
             logger.warning(f"等待下载完成超时 ({timeout}秒)")
     

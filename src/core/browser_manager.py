@@ -10,6 +10,7 @@
 import json
 import os
 import time
+import asyncio
 from typing import Dict, List, Optional, Callable, Any
 
 from fake_useragent import UserAgent
@@ -61,6 +62,9 @@ class BrowserManager:
         # 网络拦截回调
         self.request_handlers = []
         self.response_handlers = []
+
+        # 事件处理器跟踪
+        self._registered_handlers = []
         
         # 用户代理
         self.user_agent = UserAgent().random
@@ -72,7 +76,7 @@ class BrowserManager:
             启动是否成功
         """
         try:
-            logger.info("启动浏览器管理器...")
+            logger.debug("启动浏览器管理器...")
 
             # 启动Playwright
             self.playwright_instance = await async_playwright().start()
@@ -120,7 +124,7 @@ class BrowserManager:
                     with open(self.cookie_path, 'r') as f:
                         storage_state = json.load(f)
                     context_options["storage_state"] = storage_state
-                    logger.info(f"成功加载Cookie: {self.cookie_path}")
+                    logger.debug(f"成功加载Cookie: {self.cookie_path}")
                 except Exception as e:
                     logger.warning(f"加载Cookie失败: {e}")
             
@@ -142,8 +146,12 @@ class BrowserManager:
             if self.enable_network_interception:
                 self.page.on("request", self._handle_request)
                 self.page.on("response", self._handle_response)
+                self._registered_handlers.extend([
+                    ("request", self._handle_request),
+                    ("response", self._handle_response)
+                ])
             
-            logger.info("浏览器管理器启动成功")
+            logger.debug("浏览器管理器启动成功")
             return True
             
         except Exception as e:
@@ -153,11 +161,20 @@ class BrowserManager:
     async def stop(self):
         """关闭浏览器"""
         try:
+            # 注销事件处理器
+            if self.page and self._registered_handlers:
+                for event_type, handler in self._registered_handlers:
+                    try:
+                        self.page.off(event_type, handler)
+                    except Exception as e:
+                        logger.debug(f"注销{event_type}处理器失败: {e}")
+                self._registered_handlers.clear()
+
             if self.page:
                 await self.browser_context.close()
                 await self.browser.close()
                 await self.playwright_instance.stop()
-                logger.info("浏览器已关闭")
+                logger.debug("浏览器已关闭")
         except Exception as e:
             logger.error(f"关闭浏览器出错: {e}")
         finally:
@@ -308,7 +325,12 @@ class BrowserManager:
         """处理响应事件"""
         for handler in self.response_handlers:
             try:
-                handler(response)
+                # 检查是否是异步处理器
+                if asyncio.iscoroutinefunction(handler):
+                    # 创建任务来处理异步处理器
+                    asyncio.create_task(handler(response))
+                else:
+                    handler(response)
             except Exception as e:
                 logger.error(f"响应处理器出错: {e}")
 
