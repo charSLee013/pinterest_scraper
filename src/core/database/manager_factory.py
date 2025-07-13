@@ -16,6 +16,7 @@ import threading
 import weakref
 from typing import Dict, Optional
 from loguru import logger
+from sqlalchemy import text
 
 from .base import DatabaseManager
 from ...utils.utils import sanitize_filename
@@ -77,20 +78,37 @@ class DatabaseManagerFactory:
                 try:
                     # 确保关键词目录存在
                     os.makedirs(keyword_dir, exist_ok=True)
-                    
+
                     # 创建数据库管理器
                     manager = DatabaseManager(db_path)
                     manager.create_tables()
-                    
+
                     # 缓存管理器实例
                     cls._managers[cache_key] = manager
-                    
+
                     logger.debug(f"创建关键词数据库管理器: {keyword} -> {db_path}")
-                    
+
                 except Exception as e:
                     logger.error(f"创建数据库管理器失败: {keyword}, 错误: {e}")
+                    logger.error(f"数据库路径: {db_path}")
+                    logger.error(f"关键词目录: {keyword_dir}")
+                    import traceback
+                    logger.error(f"错误堆栈: {traceback.format_exc()}")
                     raise
-            
+            else:
+                # 验证现有管理器是否仍然有效
+                try:
+                    existing_manager = cls._managers[cache_key]
+                    # 测试数据库连接
+                    with existing_manager.get_session() as session:
+                        session.execute(text("SELECT 1"))
+                    logger.debug(f"复用现有数据库管理器: {keyword}")
+                except Exception as e:
+                    logger.warning(f"现有数据库管理器无效，重新创建: {keyword}, 错误: {e}")
+                    # 移除无效的管理器并重新创建
+                    del cls._managers[cache_key]
+                    return cls.get_manager(keyword, output_dir)
+
             return cls._managers[cache_key]
     
     @classmethod

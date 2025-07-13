@@ -4,11 +4,13 @@ SQLite Repository数据持久化层实现
 
 import hashlib
 import uuid
+import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
-from sqlalchemy import and_, or_, func, desc
+from sqlalchemy import and_, or_, func, desc, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.sqlite import insert
 from loguru import logger
 
 from .base import get_database_session
@@ -41,69 +43,196 @@ class SQLiteRepository:
         if self.keyword and self.output_dir:
             # 使用关键词特定的数据库管理器
             from .manager_factory import DatabaseManagerFactory
-            manager = DatabaseManagerFactory.get_manager(self.keyword, self.output_dir)
-            return manager.get_session()
+            try:
+                manager = DatabaseManagerFactory.get_manager(self.keyword, self.output_dir)
+                return manager.get_session()
+            except Exception as e:
+                logger.error(f"获取关键词特定数据库管理器失败: {e}")
+                raise RuntimeError(f"数据库管理器初始化失败: {e}")
         else:
             # 向后兼容：回退到全局管理器
-            return get_database_session()
+            try:
+                return get_database_session()
+            except RuntimeError as e:
+                logger.error(f"全局数据库管理器未初始化: {e}")
+                # 尝试自动初始化默认数据库
+                from .base import initialize_database
+                import tempfile
+                import os
+                default_db_path = os.path.join(tempfile.gettempdir(), "pinterest_default.db")
+                logger.warning(f"尝试初始化默认数据库: {default_db_path}")
+                initialize_database(default_db_path)
+                return get_database_session()
     
-    def save_pins_batch(self, pins: List[Dict[str, Any]], query: str, session_id: Optional[str] = None) -> bool:
-        """批量保存Pin数据
-        
+    def save_pins_batch(self, pins: List[Dict[str, Any]], query: str, session_id: Optional[str] = None, force_overwrite: bool = False) -> bool:
+        """批量保存Pin数据 - 使用UPSERT避免并发冲突
+
         Args:
             pins: Pin数据列表
             query: 搜索关键词
             session_id: 会话ID（可选）
-            
+            force_overwrite: 是否强制覆盖现有数据（已废弃，始终以最新数据为准）
+
         Returns:
             保存是否成功
         """
         if not pins:
             return True
-            
+
+        with self._get_session() as session:
+            saved_count = 0
+
+            for pin_data in pins:
+                pin_hash = self._calculate_pin_hash(pin_data)
+                pin_id = pin_data.get('id', str(uuid.uuid4()))
+
+                # 使用UPSERT操作避免竞态条件
+                if self._upsert_pin(session, pin_data, query, pin_hash, pin_id):
+                    saved_count += 1
+
+            # 更新元数据
+            self._update_cache_metadata(session, query)
+            if session_id:
+                self._update_session_stats(session, session_id, len(pins))
+
+            logger.info(f"批量保存完成: {saved_count} 个Pin，查询: {query}")
+            return True
+
+    def save_pin_immediately(self, pin_data: Dict[str, Any], query: str, session_id: Optional[str] = None) -> bool:
+        """立即保存单个Pin到数据库（无缓冲）
+
+        Args:
+            pin_data: Pin数据字典
+            query: 搜索关键词
+            session_id: 会话ID（可选）
+
+        Returns:
+            保存是否成功
+        """
+        if not pin_data:
+            return True
+
+        # 直接保存到数据库，不使用缓冲区
         try:
-            with self._get_session() as session:
-                saved_count = 0
-                
-                for pin_data in pins:
-                    # 计算Pin哈希值
-                    pin_hash = self._calculate_pin_hash(pin_data)
-                    pin_id = pin_data.get('id', str(uuid.uuid4()))
-                    
-                    # 检查Pin是否已存在
-                    existing_pin = session.query(Pin).filter_by(pin_hash=pin_hash).first()
-                    
-                    if existing_pin:
-                        # 更新现有Pin
-                        self._update_pin_from_dict(existing_pin, pin_data, query)
-                        logger.debug(f"更新现有Pin: {pin_id}")
-                    else:
-                        # 创建新Pin
-                        new_pin = self._create_pin_from_dict(pin_data, query, pin_hash)
-                        session.add(new_pin)
-                        saved_count += 1
-                        logger.debug(f"保存新Pin: {pin_id}")
-                        
-                        # 创建下载任务（如果有图片URL）
-                        self._create_download_task(session, new_pin, pin_data)
-                
-                # 先提交Pin数据
-                session.flush()  # 确保Pin数据已写入数据库
-
-                # 更新缓存元数据
-                self._update_cache_metadata(session, query)
-
-                # 更新会话信息
-                if session_id:
-                    self._update_session_stats(session, session_id, len(pins))
-                
-                logger.info(f"批量保存完成: {saved_count} 个新Pin，查询: {query}")
-                return True
-                
+            success = self.save_pins_batch([pin_data], query, session_id)
+            if success:
+                logger.debug(f"立即保存Pin成功: {pin_data.get('id')}")
+            return success
         except Exception as e:
-            logger.error(f"批量保存Pin失败: {e}")
+            logger.error(f"立即保存Pin失败: {pin_data.get('id')}, 错误: {e}")
             return False
-    
+
+
+
+    def _upsert_pin(self, session, pin_data: Dict[str, Any], query: str, pin_hash: str, pin_id: str) -> bool:
+        """原子性UPSERT操作，避免并发冲突
+
+        Args:
+            session: 数据库会话
+            pin_data: Pin数据字典
+            query: 搜索关键词
+            pin_hash: Pin哈希值
+            pin_id: Pin ID
+
+        Returns:
+            操作是否成功
+        """
+        try:
+            # 准备数据
+            creator = pin_data.get('creator', {})
+            board = pin_data.get('board', {})
+
+            pin_dict = {
+                'id': pin_id,
+                'pin_hash': pin_hash,
+                'query': query,
+                'title': pin_data.get('title'),
+                'description': pin_data.get('description'),
+                'creator_name': creator.get('name') if creator else None,
+                'creator_id': creator.get('id') if creator else None,
+                'board_name': board.get('name') if board else None,
+                'board_id': board.get('id') if board else None,
+                'largest_image_url': pin_data.get('largest_image_url'),
+                'image_urls': json.dumps(pin_data.get('image_urls', {})) if pin_data.get('image_urls') else None,
+                'stats': json.dumps(pin_data.get('stats', {})) if pin_data.get('stats') else None,
+                'raw_data': json.dumps(pin_data),
+                'created_at': datetime.utcnow(),
+                'updated_at': datetime.utcnow()
+            }
+
+            # SQLite UPSERT语法
+            stmt = insert(Pin).values(**pin_dict)
+
+            # 在pin_hash冲突时更新（以最新数据为准）
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['pin_hash'],
+                set_={
+                    'title': stmt.excluded.title,
+                    'description': stmt.excluded.description,
+                    'creator_name': stmt.excluded.creator_name,
+                    'creator_id': stmt.excluded.creator_id,
+                    'board_name': stmt.excluded.board_name,
+                    'board_id': stmt.excluded.board_id,
+                    'largest_image_url': stmt.excluded.largest_image_url,
+                    'image_urls': stmt.excluded.image_urls,
+                    'stats': stmt.excluded.stats,
+                    'raw_data': stmt.excluded.raw_data,
+                    'updated_at': datetime.utcnow()
+                }
+            )
+
+            session.execute(stmt)
+
+            # 处理下载任务
+            self._upsert_download_task(session, pin_id, pin_hash, pin_data)
+
+            logger.debug(f"UPSERT Pin成功: {pin_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"UPSERT Pin失败: {pin_id}, 错误: {e}")
+            return False
+
+    def _upsert_download_task(self, session, pin_id: str, pin_hash: str, pin_data: Dict[str, Any]):
+        """UPSERT下载任务，避免重复创建
+
+        Args:
+            session: 数据库会话
+            pin_id: Pin ID
+            pin_hash: Pin哈希值
+            pin_data: Pin数据字典
+        """
+        image_url = pin_data.get('largest_image_url') or pin_data.get('image_urls', {}).get('original')
+
+        if not image_url:
+            return
+
+        try:
+            task_dict = {
+                'pin_id': pin_id,
+                'pin_hash': pin_hash,
+                'image_url': image_url,
+                'status': 'pending',
+                'retry_count': 0,
+                'created_at': datetime.utcnow(),
+                'updated_at': datetime.utcnow()
+            }
+
+            stmt = insert(DownloadTask).values(**task_dict)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['pin_id'],
+                set_={
+                    'image_url': stmt.excluded.image_url,
+                    'updated_at': datetime.utcnow()
+                }
+            )
+
+            session.execute(stmt)
+            logger.debug(f"UPSERT DownloadTask成功: {pin_id}")
+
+        except Exception as e:
+            logger.error(f"UPSERT DownloadTask失败: {pin_id}, 错误: {e}")
+
     def load_pins_by_query(self, query: str, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
         """根据查询关键词加载Pin数据
         
@@ -204,14 +333,96 @@ class SQLiteRepository:
                         scraping_session.actual_count = actual_count
                     if stats:
                         scraping_session.stats_dict = stats
-                    if status in ['completed', 'failed']:
+                    if status in ['completed', 'failed', 'interrupted']:
                         scraping_session.completed_at = datetime.utcnow()
-                    
+
                     logger.debug(f"更新会话状态: {session_id} -> {status}")
                     
         except Exception as e:
             logger.error(f"更新会话状态失败: {e}")
-    
+
+    def get_incomplete_sessions(self, query: str) -> List[Dict[str, Any]]:
+        """获取未完成的会话
+
+        Args:
+            query: 搜索关键词
+
+        Returns:
+            未完成的会话字典列表
+        """
+        try:
+            with self._get_session() as session:
+                incomplete_sessions = session.query(ScrapingSession).filter(
+                    ScrapingSession.query == query,
+                    ScrapingSession.status.in_(['running', 'interrupted'])
+                ).order_by(desc(ScrapingSession.started_at)).all()
+
+                # 转换为字典格式，避免会话绑定问题
+                result = []
+                for sess in incomplete_sessions:
+                    result.append({
+                        'id': sess.id,
+                        'query': sess.query,
+                        'target_count': sess.target_count,
+                        'actual_count': sess.actual_count,
+                        'status': sess.status,
+                        'output_dir': sess.output_dir,
+                        'download_images': sess.download_images,
+                        'started_at': sess.started_at,
+                        'completed_at': sess.completed_at
+                    })
+
+                logger.debug(f"查询到 {len(result)} 个未完成会话: {query}")
+                return result
+
+        except Exception as e:
+            logger.error(f"查询未完成会话失败: {e}")
+            return []
+
+    def update_session_progress(self, session_id: str, current_count: int):
+        """实时更新会话进度
+
+        Args:
+            session_id: 会话ID
+            current_count: 当前采集数量
+        """
+        try:
+            with self._get_session() as session:
+                scraping_session = session.query(ScrapingSession).filter_by(id=session_id).first()
+
+                if scraping_session:
+                    scraping_session.actual_count = current_count
+                    logger.debug(f"更新会话进度: {session_id} -> {current_count}")
+
+        except Exception as e:
+            logger.error(f"更新会话进度失败: {e}")
+
+    def resume_session(self, session_id: str) -> bool:
+        """恢复中断的会话
+
+        Args:
+            session_id: 会话ID
+
+        Returns:
+            恢复是否成功
+        """
+        try:
+            with self._get_session() as session:
+                scraping_session = session.query(ScrapingSession).filter_by(id=session_id).first()
+
+                if scraping_session and scraping_session.status in ['interrupted', 'running']:
+                    scraping_session.status = 'running'
+                    scraping_session.completed_at = None  # 清除完成时间
+                    logger.info(f"恢复会话: {session_id}")
+                    return True
+                else:
+                    logger.warning(f"无法恢复会话: {session_id}")
+                    return False
+
+        except Exception as e:
+            logger.error(f"恢复会话失败: {e}")
+            return False
+
     def get_pending_download_tasks(self, limit: int = 100) -> List[Dict[str, Any]]:
         """获取待下载的任务
 
@@ -368,16 +579,86 @@ class SQLiteRepository:
             
         return pin
     
-    def _update_pin_from_dict(self, pin: Pin, pin_data: Dict[str, Any], query: str):
-        """从字典更新Pin对象"""
+    def _force_overwrite_pin(self, session, existing_pin: Pin, pin_data: Dict[str, Any], query: str, pin_hash: str):
+        """强制覆盖现有Pin数据
+
+        Args:
+            session: 数据库会话
+            existing_pin: 现有Pin对象
+            pin_data: 新Pin数据
+            query: 搜索关键词
+            pin_hash: Pin哈希值
+        """
+        try:
+            pin_id = existing_pin.id
+            logger.debug(f"开始强制覆盖Pin: {pin_id}")
+
+            # 1. 删除现有的下载任务
+            existing_tasks = session.query(DownloadTask).filter_by(pin_id=pin_id).all()
+            for task in existing_tasks:
+                session.delete(task)
+            logger.debug(f"删除了 {len(existing_tasks)} 个关联下载任务")
+
+            # 2. 删除现有Pin
+            session.delete(existing_pin)
+            session.flush()  # 确保删除操作完成
+
+            # 3. 创建新Pin（使用相同的ID和hash）
+            new_pin = self._create_pin_from_dict(pin_data, query, pin_hash)
+            # 保持原有的ID以维持引用一致性
+            new_pin.id = pin_id
+            session.add(new_pin)
+            session.flush()  # 确保新Pin已创建
+
+            # 4. 创建新的下载任务
+            self._create_download_task(session, new_pin, pin_data)
+
+            logger.info(f"强制覆盖完成: {pin_id}")
+
+        except Exception as e:
+            logger.error(f"强制覆盖Pin失败: {pin_id}, 错误: {e}")
+            raise
+
+    def _update_pin_from_dict(self, pin: Pin, pin_data: Dict[str, Any], query: str, force_overwrite: bool = False):
+        """从字典更新Pin对象
+
+        Args:
+            pin: Pin对象
+            pin_data: Pin数据字典
+            query: 搜索关键词
+            force_overwrite: 是否强制覆盖所有字段
+        """
         pin.updated_at = datetime.utcnow()
-        pin.raw_data_dict = pin_data  # 更新原始数据
-        
-        # 更新其他字段（如果有新数据）
-        if 'title' in pin_data and pin_data['title']:
-            pin.title = pin_data['title']
-        if 'description' in pin_data and pin_data['description']:
-            pin.description = pin_data['description']
+
+        if force_overwrite:
+            # 强制覆盖所有字段
+            logger.debug(f"强制覆盖Pin所有字段: {pin.id}")
+            creator = pin_data.get('creator', {})
+            board = pin_data.get('board', {})
+
+            pin.title = pin_data.get('title')
+            pin.description = pin_data.get('description')
+            pin.creator_name = creator.get('name') if creator else None
+            pin.creator_id = creator.get('id') if creator else None
+            pin.board_name = board.get('name') if board else None
+            pin.board_id = board.get('id') if board else None
+            pin.largest_image_url = pin_data.get('largest_image_url')
+
+            # 强制更新JSON字段
+            pin.raw_data_dict = pin_data
+            if 'image_urls' in pin_data:
+                pin.image_urls_dict = pin_data['image_urls']
+            if 'stats' in pin_data:
+                pin.stats_dict = pin_data['stats']
+        else:
+            # 选择性更新（原有逻辑）
+            pin.raw_data_dict = pin_data  # 更新原始数据
+
+            # 更新其他字段（如果有新数据）
+            if 'title' in pin_data and pin_data['title']:
+                pin.title = pin_data['title']
+            if 'description' in pin_data and pin_data['description']:
+                pin.description = pin_data['description']
     
     def _create_download_task(self, session, pin: Pin, pin_data: Dict[str, Any]):
         """创建下载任务"""
@@ -423,3 +704,5 @@ class SQLiteRepository:
         
         if scraping_session:
             scraping_session.actual_count = (scraping_session.actual_count or 0) + new_pins_count
+
+

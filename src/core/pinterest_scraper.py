@@ -30,6 +30,7 @@ from loguru import logger
 from .smart_scraper import SmartScraper
 from .database.repository import SQLiteRepository
 from .download.task_manager import DownloadTaskManager
+from .process_manager import ProcessManager
 from ..utils import utils
 
 
@@ -78,6 +79,7 @@ class PinterestScraper:
         # 这样可以确保每个关键词使用独立的数据库文件
         self.repository = None
         self.download_manager = None
+        self.process_manager = None
         # 传递代理设置给下载器
         if proxy:
             self.download_manager.downloader.proxy = proxy
@@ -118,65 +120,116 @@ class PinterestScraper:
         work_dirs = utils.setup_directories(self.output_dir, work_name, self.debug)
         work_dir = work_dirs.get('term_root', work_dirs['root'])
 
-        # 创建关键词特定的repository
-        self.repository = SQLiteRepository(keyword=work_name, output_dir=self.output_dir)
+        # 获取进程锁，防止多实例同时处理相同关键词
+        self.process_manager = ProcessManager(work_name, self.output_dir)
+        if not self.process_manager.acquire_lock():
+            logger.error(f"无法启动采集任务，检测到其他实例正在处理: {work_name}")
+            logger.info("请等待其他实例完成，或检查是否有僵尸进程")
+            return []
 
-        # 创建关键词特定的下载管理器
-        self.download_manager = DownloadTaskManager(
-            keyword=work_name,
-            output_dir=self.output_dir,
-            max_concurrent=15,
-            auto_start=False,
-            prefer_requests=self.prefer_requests
-        )
-        # 传递代理设置给下载器
-        if self.proxy:
-            self.download_manager.downloader.proxy = self.proxy
+        try:
+            # 创建关键词特定的repository
+            try:
+                self.repository = SQLiteRepository(keyword=work_name, output_dir=self.output_dir)
+                # 测试数据库连接
+                self.repository.load_pins_by_query(work_name, limit=1)
+                logger.debug(f"数据库连接测试成功: {work_name}")
+            except Exception as e:
+                logger.error(f"数据库初始化失败: {e}")
+                # 重新创建repository，触发数据库初始化
+                self.repository = SQLiteRepository(keyword=work_name, output_dir=self.output_dir)
 
-        # 创建采集会话
-        session_id = self.repository.create_scraping_session(
-            query=work_name,
-            target_count=count,
-            output_dir=work_dir,
-            download_images=self.download_images
-        )
+            # 创建关键词特定的下载管理器
+            self.download_manager = DownloadTaskManager(
+                keyword=work_name,
+                output_dir=self.output_dir,
+                max_concurrent=15,
+                auto_start=False,
+                prefer_requests=self.prefer_requests
+            )
+            # 传递代理设置给下载器
+            if self.proxy:
+                self.download_manager.downloader.proxy = self.proxy
 
-        # 从数据库加载缓存数据
-        cached_pins = self.repository.load_pins_by_query(work_name)
-        if len(cached_pins) >= count:
-            logger.info(f"数据库中已有 {len(cached_pins)} 个pins，直接使用")
+            # 检查是否有未完成的会话需要恢复
+            session_id = await self._check_and_resume_session(work_name, count, work_dir)
+
+            if not session_id:
+                # 检查是否有已完成的数据但数量不足
+                existing_pins = self.repository.load_pins_by_query(work_name, limit=None)
+                if existing_pins and len(existing_pins) < count:
+                    logger.info(f"🔄 发现已有数据但数量不足: {len(existing_pins)}/{count} 个Pin")
+                    logger.info(f"📈 将继续采集剩余的 {count - len(existing_pins)} 个Pin")
+
+                # 创建新的采集会话
+                session_id = self.repository.create_scraping_session(
+                    query=work_name,
+                    target_count=count,
+                    output_dir=work_dir,
+                    download_images=self.download_images
+                )
+
+            # 从数据库加载缓存数据
+            cached_pins = self.repository.load_pins_by_query(work_name)
+            logger.debug(f"🔍 数据库检查: 已有 {len(cached_pins)} 个pins，目标 {count} 个pins")
+
+            if len(cached_pins) >= count:
+                logger.info(f"✅ 数据库中已有 {len(cached_pins)} 个pins，满足目标 {count} 个，直接使用")
+                # 更新会话状态
+                self.repository.update_session_status(session_id, 'completed', len(cached_pins))
+                return await self._finalize_results(cached_pins[:count], work_dir, session_id)
+
+            # 计算实际需要采集的数量（增量采集）
+            cached_count = len(cached_pins)
+            remaining_count = count - cached_count
+
+            if cached_count > 0:
+                logger.info(f"数据库中已有 {cached_count} 个pins，还需要采集 {remaining_count} 个")
+
+            # 执行智能采集（只采集剩余数量）- 启用实时保存
+            new_pins = await self.scraper.scrape(
+                query=query,
+                url=url,
+                target_count=remaining_count,
+                repository=self.repository,
+                session_id=session_id
+            )
+
+            # 实时保存已完成，所有数据都已直接写入数据库
+            if new_pins:
+                logger.debug(f"实时保存完成: {len(new_pins)} 个Pin")
+
+            # 重新从数据库加载所有数据（确保数据一致性）
+            all_pins = self.repository.load_pins_by_query(work_name, limit=None)
+
+            # 确保不超过目标数量
+            final_pins = all_pins[:count]
+
+            logger.info(f"数据采集完成: {cached_count} + {len(new_pins)} = {len(final_pins)} 个pins")
+
             # 更新会话状态
-            self.repository.update_session_status(session_id, 'completed', len(cached_pins))
-            return await self._finalize_results(cached_pins[:count], work_dir, session_id)
+            self.repository.update_session_status(session_id, 'completed', len(final_pins))
 
-        # 计算实际需要采集的数量（增量采集）
-        cached_count = len(cached_pins)
-        remaining_count = count - cached_count
+            return await self._finalize_results(final_pins, work_dir, session_id)
 
-        if cached_count > 0:
-            logger.info(f"数据库中已有 {cached_count} 个pins，还需要采集 {remaining_count} 个")
-
-        # 执行智能采集（只采集剩余数量）
-        new_pins = await self.scraper.scrape(query=query, url=url, target_count=remaining_count)
-
-        # 批量保存新采集的Pin数据到数据库
-        if new_pins:
-            success = self.repository.save_pins_batch(new_pins, work_name, session_id)
-            if not success:
-                logger.error("保存Pin数据到数据库失败")
-
-        # 重新从数据库加载所有数据（确保数据一致性）
-        all_pins = self.repository.load_pins_by_query(work_name, limit=count)
-
-        # 确保不超过目标数量
-        final_pins = all_pins[:count]
-
-        logger.info(f"数据采集完成: {cached_count} + {len(new_pins)} = {len(final_pins)} 个pins")
-
-        # 更新会话状态
-        self.repository.update_session_status(session_id, 'completed', len(final_pins))
-
-        return await self._finalize_results(final_pins, work_dir, session_id)
+        except KeyboardInterrupt:
+            logger.warning("检测到用户中断，数据已实时保存到数据库...")
+            # 更新会话状态为中断
+            if hasattr(self, 'repository') and self.repository and 'session_id' in locals():
+                saved_count = len(self.repository.load_pins_by_query(work_name))
+                self.repository.update_session_status(session_id, 'interrupted', saved_count)
+                logger.info(f"会话状态已更新为中断，已保存 {saved_count} 个Pin")
+            raise
+        except Exception as e:
+            logger.error(f"采集过程出错: {e}")
+            # 更新会话状态为失败
+            if hasattr(self, 'repository') and self.repository and 'session_id' in locals():
+                self.repository.update_session_status(session_id, 'failed', 0)
+            raise
+        finally:
+            # 确保释放进程锁
+            if self.process_manager:
+                self.process_manager.release_lock()
 
     # 注意：_load_cache 和 _merge_pins 方法已被数据库Repository替代
     # 数据库自动处理缓存和去重逻辑
@@ -308,6 +361,66 @@ class PinterestScraper:
         except Exception as e:
             logger.error(f"等待下载完成时出错: {e}")
             raise
+
+    async def _check_and_resume_session(self, work_name: str, count: int, work_dir: str) -> Optional[str]:
+        """检查并恢复未完成的会话
+
+        Args:
+            work_name: 工作名称
+            count: 目标数量
+            work_dir: 工作目录
+
+        Returns:
+            恢复的会话ID，如果没有恢复则返回None
+        """
+        try:
+            # 查询未完成的会话
+            incomplete_sessions = self.repository.get_incomplete_sessions(work_name)
+
+            if not incomplete_sessions:
+                return None
+
+            # 获取最新的未完成会话
+            latest_session = incomplete_sessions[0]
+            cached_pins = self.repository.load_pins_by_query(work_name)
+            cached_count = len(cached_pins)
+
+            if cached_count == 0:
+                logger.info("📝 发现未完成会话但无缓存数据，创建新会话")
+                return None
+
+            # 自动使用已有数据，无需用户确认
+            logger.warning(f"🔄 发现未完成任务: {work_name}")
+            logger.info(f"📊 上次进度: {cached_count}/{latest_session['target_count']} 个Pin (已完成 {cached_count/latest_session['target_count']*100:.1f}%)")
+            logger.info(f"📅 会话状态: {latest_session['status']}")
+            logger.info(f"🎯 本次目标: {count} 个Pin")
+
+            if cached_count >= count:
+                logger.info(f"✅ 已有数据 ({cached_count} 个Pin) 满足本次目标 ({count} 个Pin)，直接使用现有数据")
+                remaining_needed = 0
+            else:
+                remaining_needed = count - cached_count
+                logger.info(f"📈 自动继续采集剩余的 {remaining_needed} 个Pin")
+
+            # 自动恢复会话，无需用户确认
+            # 恢复会话
+            session_id = latest_session['id']
+            success = self.repository.resume_session(session_id)
+
+            if success:
+                logger.info(f"✅ 成功恢复会话: {session_id}")
+                if remaining_needed > 0:
+                    logger.info(f"🚀 将从 {cached_count} 个Pin继续采集到 {count} 个Pin (还需 {remaining_needed} 个)")
+                else:
+                    logger.info(f"🎉 已有数据满足需求，直接使用 {cached_count} 个Pin")
+                return session_id
+            else:
+                logger.error("❌ 恢复会话失败，将创建新会话")
+                return None
+
+        except Exception as e:
+            logger.error(f"检查会话恢复时出错: {e}")
+            return None
 
     async def close(self):
         """关闭爬虫，清理资源"""

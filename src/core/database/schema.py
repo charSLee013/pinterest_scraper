@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from sqlalchemy import Column, String, Integer, Text, Boolean, DateTime, ForeignKey, Index
+from sqlalchemy import Column, String, Integer, Text, Boolean, DateTime, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.hybrid import hybrid_property
 
@@ -59,6 +59,9 @@ class Pin(Base):
         Index('idx_pin_query_created', 'query', 'created_at'),
         Index('idx_pin_creator', 'creator_id'),
         Index('idx_pin_board', 'board_id'),
+        # 添加复合索引优化常见查询
+        Index('idx_pin_query_updated', 'query', 'updated_at'),
+        Index('idx_pin_hash_query', 'pin_hash', 'query'),  # 优化去重查询
     )
     
     @hybrid_property
@@ -181,6 +184,10 @@ class DownloadTask(Base):
     __table_args__ = (
         Index('idx_download_status_created', 'status', 'created_at'),
         Index('idx_download_pin_status', 'pin_id', 'status'),
+        Index('idx_download_retry_status', 'retry_count', 'status'),  # 优化重试查询
+        Index('idx_download_updated', 'updated_at'),  # 优化时间范围查询
+        # 添加唯一约束确保每个pin只有一个下载任务
+        UniqueConstraint('pin_id', name='uq_download_task_pin_id'),
     )
     
     def __repr__(self):
@@ -201,7 +208,7 @@ class ScrapingSession(Base):
     actual_count = Column(Integer, default=0, comment='实际采集数量')
     
     # 会话状态
-    status = Column(String(20), default='running', index=True, comment='会话状态：running/completed/failed')
+    status = Column(String(20), default='running', index=True, comment='会话状态：running/completed/failed/interrupted')
     
     # 配置信息
     output_dir = Column(Text, comment='输出目录')

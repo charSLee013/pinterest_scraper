@@ -37,38 +37,51 @@ class SmartScraper:
         proxy: Optional[str] = None,
         timeout: int = config.DEFAULT_TIMEOUT,
         cookie_path: Optional[str] = None,
-        debug: bool = False
+        debug: bool = False,
+        repository=None,
+        session_id: Optional[str] = None
     ):
         """初始化智能采集引擎
-        
+
         Args:
             proxy: 代理服务器地址
             timeout: 超时时间
             cookie_path: Cookie文件路径
             debug: 调试模式
+            repository: Repository实例，用于实时保存
+            session_id: 会话ID，用于会话追踪
         """
         self.proxy = proxy
         self.timeout = timeout
         self.cookie_path = cookie_path
         self.debug = debug
-        
+
+        # 实时保存相关
+        self.repository = repository
+        self.session_id = session_id
+        self._interrupt_requested = False
+        self._saved_count = 0  # 已保存的Pin数量
+
         # 数据收集状态
         self.collected_pins = []
         self.seen_pin_ids = set()
-        
+
         # 性能统计
         self.stats = {
             "total_scrolls": 0,
             "api_calls_intercepted": 0,
             "html_extractions": 0,
-            "duplicates_filtered": 0
+            "duplicates_filtered": 0,
+            "pins_saved_realtime": 0  # 实时保存的Pin数量
         }
 
     async def scrape(
         self,
         query: Optional[str] = None,
         url: Optional[str] = None,
-        target_count: int = 50
+        target_count: int = 50,
+        repository=None,
+        session_id: Optional[str] = None
     ) -> List[Dict]:
         """智能采集Pinterest数据 - 实时去重版
 
@@ -79,14 +92,28 @@ class SmartScraper:
             query: 搜索关键词
             url: 直接URL
             target_count: 目标去重后唯一Pin数量
+            repository: Repository实例，用于实时保存（优先级高于构造函数参数）
+            session_id: 会话ID，用于会话追踪（优先级高于构造函数参数）
 
         Returns:
             采集到的去重后Pin数据列表
         """
+        # 更新实时保存参数（方法参数优先级高于构造函数参数）
+        if repository is not None:
+            self.repository = repository
+        if session_id is not None:
+            self.session_id = session_id
+
         logger.info(f"开始智能采集，目标: {target_count} 个去重后唯一Pin")
+        if self.repository:
+            logger.info("启用实时保存模式")
 
         # 重置状态
         self._reset_state()
+
+        # 记录采集开始时的基准数量（在重置状态之后）
+        self._baseline_count = self._get_saved_count_from_db(query) if self.repository else 0
+        logger.debug(f"📊 采集基准: 数据库中已有 {self._baseline_count} 个Pin")
 
         # 构建目标URL
         target_url = self._build_url(query, url)
@@ -97,8 +124,13 @@ class SmartScraper:
         # 统一使用hybrid混合策略
         logger.info("使用统一的hybrid混合策略")
 
-        # 实时去重采集主循环
-        return await self._adaptive_scrape_with_dedup(query, target_url, target_count)
+        try:
+            # 实时去重采集主循环
+            return await self._adaptive_scrape_with_dedup(query, target_url, target_count)
+        except KeyboardInterrupt:
+            logger.warning("检测到用户中断，保存已采集数据...")
+            await self._handle_interrupt(query)
+            raise
 
     async def _adaptive_scrape_with_dedup(
         self,
@@ -106,7 +138,7 @@ class SmartScraper:
         target_url: str,
         target_count: int
     ) -> List[Dict]:
-        """自适应采集，实时去重直到达到目标数量
+        """自适应采集，基于数据库的实时去重直到达到目标数量
 
         Args:
             query: 搜索关键词
@@ -114,28 +146,33 @@ class SmartScraper:
             target_count: 目标去重后数量
 
         Returns:
-            去重后的Pin数据列表
+            去重后的Pin数据列表（从数据库加载）
         """
-        collected_pins = []
-        seen_ids = set()
         attempted_strategies = []
         max_rounds = 5  # 最大采集轮次
-        max_total_raw_pins = target_count * 4  # 防止采集过多无用数据
 
-        logger.info(f"开始自适应采集，最大轮次: {max_rounds}")
+        logger.info(f"开始基于数据库的自适应采集，最大轮次: {max_rounds}")
 
         for round_num in range(max_rounds):
-            current_unique_count = len(collected_pins)
-            remaining_needed = target_count - current_unique_count
+            # 检查中断请求
+            if self._interrupt_requested:
+                logger.info("检测到中断请求，停止采集")
+                break
+
+            # 从数据库获取当前已保存的Pin数量
+            current_total_count = self._get_saved_count_from_db(query)
+            current_new_count = current_total_count - self._baseline_count  # 本次采集新增的数量
+            remaining_needed = target_count - current_new_count
+
+            logger.debug(f"🔢 采集状态: 总数={current_total_count}, 基准={self._baseline_count}, 新增={current_new_count}, 目标={target_count}, 还需={remaining_needed}")
 
             if remaining_needed <= 0:
                 logger.info(f"已达到目标数量 {target_count}，采集完成")
                 break
 
-            logger.info(f"第 {round_num + 1} 轮采集，当前: {current_unique_count}，还需: {remaining_needed}")
+            logger.info(f"第 {round_num + 1} 轮采集，总数: {current_total_count}，新增: {current_new_count}，还需: {remaining_needed}")
 
-            # 简化逻辑：直接使用剩余需要的数量，不进行复杂的"智能调整"
-            # 用户要多少就采集多少，采集到目标数量就停止
+            # 简化逻辑：直接使用剩余需要的数量
             current_target = remaining_needed
 
             logger.info(f"本轮目标: {current_target} 个去重后唯一Pin")
@@ -149,35 +186,31 @@ class SmartScraper:
                 logger.warning("hybrid策略未获取到数据")
                 continue
 
-            # 实时去重合并
-            before_merge = len(collected_pins)
-            collected_pins, new_unique_count = self._merge_and_deduplicate_incremental(
-                collected_pins, new_pins, seen_ids
-            )
+            # 实时保存到数据库（去重在数据库层面处理）
+            new_unique_count = await self._save_pins_to_db(new_pins, query)
 
-            logger.info(f"本轮新增唯一Pin: {new_unique_count}，累计: {len(collected_pins)}")
-
-            # 安全检查：防止采集过多数据
-            total_raw_pins = len(collected_pins) + len(new_pins)
-            if total_raw_pins > max_total_raw_pins:
-                logger.warning(f"采集数据量过大 ({total_raw_pins})，停止采集")
-                break
+            logger.info(f"本轮新增唯一Pin: {new_unique_count}")
 
             # 检查去重率，如果过高则停止
             if round_num > 0 and new_unique_count == 0:
                 logger.warning("本轮未获得新的唯一Pin，可能数据源已枯竭")
                 break
 
-            # 如果已达到目标，提前退出
-            if len(collected_pins) >= target_count:
+            # 重新检查数据库中的新增数量
+            current_total_count = self._get_saved_count_from_db(query)
+            current_new_count = current_total_count - self._baseline_count
+            if current_new_count >= target_count:
                 logger.info(f"已达到目标数量，提前结束采集")
                 break
 
-        final_count = len(collected_pins)
+        # 从数据库加载最终结果（只返回本次采集的目标数量）
+        all_pins = self._load_pins_from_db(query, None)  # 加载所有Pin
+        final_pins = all_pins[-target_count:] if len(all_pins) >= target_count else all_pins  # 取最新的target_count个
+        final_count = len(final_pins)
+
         logger.info(f"采集完成: {final_count}/{target_count} 个唯一Pin (使用策略: {', '.join(set(attempted_strategies))})")
 
-        # 返回目标数量的Pin（如果超过了目标数量）
-        return collected_pins[:target_count]
+        return final_pins
 
     def _estimate_dedup_rate(self, collected_pins: List[Dict], round_num: int) -> float:
         """估算去重率，用于调整采集目标
@@ -226,33 +259,87 @@ class SmartScraper:
 
 
 
-    def _merge_and_deduplicate_incremental(
-        self,
-        existing_pins: List[Dict],
-        new_pins: List[Dict],
-        seen_ids: set
-    ) -> tuple[List[Dict], int]:
-        """增量合并和去重Pin数据
+    async def _save_pins_to_db(self, pins: List[Dict], query: Optional[str]) -> int:
+        """将Pin数据保存到数据库，返回新增的唯一Pin数量
 
         Args:
-            existing_pins: 已有的Pin数据
-            new_pins: 新采集的Pin数据
-            seen_ids: 已见过的Pin ID集合
+            pins: 要保存的Pin数据列表
+            query: 搜索关键词
 
         Returns:
-            (合并后的Pin列表, 新增唯一Pin数量)
+            新增的唯一Pin数量
         """
-        merged_pins = existing_pins.copy()
+        if not self.repository or not query:
+            logger.warning("无Repository或query，无法保存Pin数据")
+            return 0
+
         new_unique_count = 0
 
-        for pin in new_pins:
+        for pin in pins:
             pin_id = pin.get('id')
-            if pin_id and pin_id not in seen_ids:
-                seen_ids.add(pin_id)
-                merged_pins.append(pin)
-                new_unique_count += 1
+            if not pin_id:
+                continue
 
-        return merged_pins, new_unique_count
+            try:
+                # 检查Pin是否已存在
+                if not self._is_pin_exists_in_db(pin_id, query):
+                    # 直接保存到数据库（不使用缓冲区）
+                    success = self.repository.save_pins_batch([pin], query, self.session_id)
+                    if success:
+                        new_unique_count += 1
+                        self._saved_count += 1
+                        self.stats["pins_saved_realtime"] += 1
+                        logger.debug(f"保存新Pin到数据库: {pin_id} (总计: {self._saved_count})")
+                    else:
+                        logger.error(f"保存Pin到数据库失败: {pin_id}")
+                else:
+                    logger.debug(f"Pin已存在，跳过: {pin_id}")
+
+            except Exception as e:
+                logger.error(f"保存Pin时出错: {pin_id}, 错误: {e}")
+
+            # 检查中断请求
+            if self._interrupt_requested:
+                logger.info(f"检测到中断请求，停止保存Pin")
+                break
+
+        return new_unique_count
+
+    def _get_saved_count_from_db(self, query: Optional[str]) -> int:
+        """从数据库获取已保存的Pin数量"""
+        if not self.repository or not query:
+            return 0
+
+        try:
+            pins = self.repository.load_pins_by_query(query, limit=None)
+            return len(pins)
+        except Exception as e:
+            logger.error(f"从数据库获取Pin数量失败: {e}")
+            return 0
+
+    def _load_pins_from_db(self, query: Optional[str], limit: int) -> List[Dict]:
+        """从数据库加载Pin数据"""
+        if not self.repository or not query:
+            return []
+
+        try:
+            return self.repository.load_pins_by_query(query, limit=limit)
+        except Exception as e:
+            logger.error(f"从数据库加载Pin数据失败: {e}")
+            return []
+
+    def _is_pin_exists_in_db(self, pin_id: str, query: str) -> bool:
+        """检查Pin是否已存在于数据库中"""
+        if not self.repository:
+            return False
+
+        try:
+            # 使用简单的查询检查Pin是否存在
+            pins = self.repository.load_pins_by_query(query, limit=None)
+            return any(pin.get('id') == pin_id for pin in pins)
+        except Exception as e:
+            logger.error(f"检查Pin是否存在时出错: {e}")
+            return False
 
 
 
@@ -464,11 +551,15 @@ class SmartScraper:
         """重置采集状态"""
         self.collected_pins.clear()
         self.seen_pin_ids.clear()
+        self._interrupt_requested = False
+        self._saved_count = 0
+        self._baseline_count = 0  # 采集基准数量
         self.stats = {
             "total_scrolls": 0,
             "api_calls_intercepted": 0,
             "html_extractions": 0,
-            "duplicates_filtered": 0
+            "duplicates_filtered": 0,
+            "pins_saved_realtime": 0
         }
 
     def get_stats(self) -> Dict:
@@ -559,5 +650,30 @@ class SmartScraper:
         except Exception as e:
             logger.error(f"搜索阶段采集出错: {e}")
             return []
-        finally:
-            await browser.stop()
+
+    async def _handle_interrupt(self, query: Optional[str]):
+        """处理用户中断，数据已实时保存"""
+        if self.repository and query:
+            try:
+                logger.info(f"中断处理完成，已实时保存 {self._saved_count} 个Pin")
+
+                # 更新会话状态为中断
+                if self.session_id:
+                    self.repository.update_session_status(
+                        self.session_id, 'interrupted', self._saved_count
+                    )
+                    logger.info(f"会话状态已更新为中断: {self.session_id}")
+
+            except Exception as e:
+                logger.error(f"中断处理失败: {e}")
+        else:
+            logger.warning("无Repository或query，无法更新中断状态")
+
+    def request_interrupt(self):
+        """请求中断采集（用于外部调用）"""
+        self._interrupt_requested = True
+        logger.info("已请求中断采集")
+
+    def get_saved_count(self) -> int:
+        """获取已保存的Pin数量"""
+        return self._saved_count
