@@ -526,7 +526,7 @@ class NetworkInterceptor:
         
         # 安全地获取响应体大小
         try:
-            body = response.body()
+            body = await response.body()
             response_info["size"] = len(body) if body else 0
         except Exception as e:
             logger.debug(f"无法获取响应体大小: {e}")

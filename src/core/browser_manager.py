@@ -83,9 +83,11 @@ class BrowserManager:
             # 配置启动选项
             launch_options = {
                 "headless": self.headless,
-                "args": config.BROWSER_ARGS
+                "args": config.BROWSER_ARGS,
+                "slow_mo": 100,  # 添加100ms延迟，减少检测风险
+                "timeout": 60000,  # 60秒启动超时
             }
-            
+
             # 代理配置
             if self.proxy:
                 proxy_config = {"server": self.proxy}
@@ -201,8 +203,8 @@ class BrowserManager:
                 if "pinterest.com/search" in url:
                     await self._establish_pinterest_session()
 
-                # 使用优化的60秒超时
-                await self.page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                # 使用优化的60秒超时，增加网络空闲等待
+                await self.page.goto(url, timeout=60000, wait_until="networkidle")
 
                 # 导航成功后的人类行为延迟
                 await self._human_like_delay(2.0, 4.0)
@@ -221,15 +223,35 @@ class BrowserManager:
                 return True
 
             except Exception as e:
-                logger.warning(f"导航失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                error_msg = str(e)
+                logger.warning(f"导航失败 (尝试 {attempt + 1}/{max_retries}): {error_msg}")
 
-                if attempt < max_retries - 1:
+                # 特殊处理连接关闭错误
+                if "ERR_CONNECTION_CLOSED" in error_msg or "net::ERR_CONNECTION_CLOSED" in error_msg:
+                    logger.warning("检测到连接关闭错误，可能是网络不稳定或Pinterest反爬虫机制")
+
+                    # 对于连接关闭错误，增加更长的等待时间
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delays[attempt] * 2  # 双倍等待时间
+                        logger.info(f"连接关闭错误，等待 {wait_time} 秒后重试...")
+                        await asyncio.sleep(wait_time)
+
+                        # 尝试重新建立浏览器连接
+                        try:
+                            await self.page.reload(timeout=30000)
+                            await asyncio.sleep(3)
+                        except:
+                            logger.debug("页面重载失败，继续重试")
+                    else:
+                        logger.error(f"导航最终失败 (连接关闭): {url}")
+                        return False
+                elif attempt < max_retries - 1:
                     # 使用固定的重试延迟
                     wait_time = retry_delays[attempt]
                     logger.info(f"等待 {wait_time} 秒后重试...")
                     await asyncio.sleep(wait_time)
                 else:
-                    logger.error(f"导航最终失败，已重试 {max_retries} 次: {e}")
+                    logger.error(f"导航最终失败，已重试 {max_retries} 次: {error_msg}")
                     return False
 
         return False
