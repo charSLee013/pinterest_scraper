@@ -27,7 +27,7 @@ ORIGINAL_SIZE_MARKER = "originals"
 # 等待和重试设置
 SCROLL_PAUSE_TIME = 1.0  # 滚动暂停时间(秒)
 INITIAL_WAIT_TIME = 3.0  # 初始页面加载等待时间(秒)
-DEFAULT_TIMEOUT = 30  # 默认超时时间(秒)
+DEFAULT_TIMEOUT = 60  # 默认超时时间(秒) - 优化为60秒
 MAX_RETRIES = 3  # 最大重试次数
 RETRY_DELAY = 2.0  # 重试延迟(秒)
 MAX_SCROLL_ATTEMPTS = 5000  # 最大滚动尝试次数
@@ -35,9 +35,8 @@ MAX_SCROLL_ATTEMPTS = 5000  # 最大滚动尝试次数
 DEFAULT_THREAD_COUNT = 16  # 默认下载线程数
 MAX_THREAD_COUNT = 32  # 最大下载线程数
 
-# Chrome驱动配置
-CHROME_OPTIONS = [
-    "--headless=True",  # 注释的话可以看到页面来实时debug卡点在哪
+# 浏览器启动配置（用于Patchright）
+BROWSER_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",

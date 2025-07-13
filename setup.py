@@ -48,6 +48,14 @@ def main():
     # 安装浏览器
     if not run_command("uv run python -m patchright install", "安装Patchright浏览器"):
         return 1
+
+    # 在Linux系统上安装系统依赖
+    if os.name == 'posix':  # Unix/Linux系统
+        print("🔧 检测到Linux系统，安装浏览器系统依赖...")
+        if not run_command("uv run python -m patchright install-deps", "安装浏览器系统依赖"):
+            print("⚠️  系统依赖安装失败，可能需要管理员权限")
+            print("请手动运行: sudo uv run python -m patchright install-deps")
+            print("或者: sudo apt-get install libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libxdamage1")
     
     # 测试安装
     test_cmd = '''uv run python -c "

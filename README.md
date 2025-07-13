@@ -97,6 +97,8 @@ pins = await scraper.scrape(query="cats", count=500)
 - Windows/Linux/macOS
 
 ### 快速安装
+
+#### Windows/macOS
 ```bash
 # 克隆项目
 git clone <repository-url>
@@ -108,14 +110,32 @@ python setup.py
 # 方法二：手动安装
 uv sync
 uv run python -m patchright install
+```
 
-# 方法三：使用pip
-pip install -e .
-playwright install chromium
+#### Linux
+```bash
+# 克隆项目
+git clone <repository-url>
+cd pinterest_scraper
+
+# 方法一：Linux一键安装（推荐）
+chmod +x install_linux.sh
+./install_linux.sh
+
+# 方法二：手动安装
+uv sync
+uv run python -m patchright install
+uv run python -m patchright install-deps  # 安装系统依赖
+
+# 方法三：使用系统包管理器
+sudo apt-get install libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libxdamage1
+uv sync
+uv run python -m patchright install
 ```
 
 ### 🔧 浏览器安装问题解决
 
+#### 问题1：浏览器二进制文件缺失
 如果遇到以下错误：
 ```
 BrowserType.launch: Executable doesn't exist at /root/.cache/ms-playwright/chromium_headless_shell-1169/chrome-linux/headless_shell
@@ -123,18 +143,43 @@ BrowserType.launch: Executable doesn't exist at /root/.cache/ms-playwright/chrom
 
 **解决方案**：
 ```bash
-# 使用uv环境安装浏览器
+# 安装浏览器二进制文件
 uv run python -m patchright install
 
 # 或者使用安装脚本
 uv run python install_browsers.py
+```
 
-# 验证安装
+#### 问题2：Linux系统依赖缺失
+如果遇到以下错误：
+```
+Host system is missing dependencies to run browsers.
+Please install them with the following command: playwright install-deps
+```
+
+**解决方案**：
+```bash
+# 方法一：使用Patchright安装依赖
+uv run python -m patchright install-deps
+
+# 方法二：使用Linux一键安装脚本
+./install_linux.sh
+
+# 方法三：手动安装系统依赖
+# Debian/Ubuntu:
+sudo apt-get install libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libxdamage1
+
+# CentOS/RHEL:
+sudo yum install nss nspr atk at-spi2-atk gtk3 alsa-lib
+```
+
+#### 验证安装
+```bash
 uv run python -c "
 from patchright.sync_api import sync_playwright
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
-    print('浏览器安装成功!')
+    print('✅ 浏览器安装成功!')
     browser.close()
 "
 ```

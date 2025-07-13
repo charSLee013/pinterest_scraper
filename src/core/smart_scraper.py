@@ -8,6 +8,7 @@
 """
 
 import time
+import asyncio
 from typing import Dict, List, Optional, Set
 from collections import deque
 
@@ -399,7 +400,9 @@ class SmartScraper:
                 if not await browser.navigate(pin_url):
                     return []
 
-                time.sleep(2)
+                # 页面加载后的人类行为延迟
+                import random
+                await asyncio.sleep(random.uniform(2.0, 4.0))
 
                 # 滚动获取相关推荐，直到连续3次无新数据
                 consecutive_no_new = 0
@@ -415,7 +418,8 @@ class SmartScraper:
 
                     # 滚动页面
                     await browser.page.evaluate("window.scrollBy(0, window.innerHeight)")
-                    time.sleep(1.5)
+                    # 滚动后的人类行为延迟
+                    await asyncio.sleep(random.uniform(1.5, 3.0))
                     scroll_count += 1
 
                     # 等待页面加载

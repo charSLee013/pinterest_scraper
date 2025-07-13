@@ -39,11 +39,8 @@ dependencies = [
     # 网络分析模块依赖
     "tldextract>=5.1.0",
 
-    # 可选依赖（保留兼容性）
-    "selenium>=4.15.0",
-    "undetected-chromedriver>=3.5.0",
+    # UI和进度显示
     "tqdm>=4.67.1",
-    "webdriver-manager>=4.0.2",
 ]
 
 [project.optional-dependencies]
