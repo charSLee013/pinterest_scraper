@@ -1,6 +1,6 @@
 {
   "headers": {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
     "Accept-Encoding": "gzip, deflate, br",
@@ -14,35 +14,35 @@
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
     "Referer": "https://www.pinterest.com/",
-    "Cookie": "_GRECAPTCHA=09ANMylNAdbPAbHcy6BfiL5-bzC_0djLgRUebMV_OVG14-1Iy-LbiF78b1Mupm4AUM2nxGnTKo-J5ucoFRcEzB-LE; csrftoken=89c78adda2debeca223501c14d3335dc; _pinterest_sess=TWc9PSZTMEVENUpOOUcvNWJ2WlUwQlZ6TVdYQkNKaDlLcEV0Vzh0eGJMbzYvVXJHcFR5eWdwVjFqZVdGcEpvbVMrOTlVTkhVOWFhYXVQRk90em41c3ZqNTkwNlpscXVnYkh4RUlHY3lxZzNoNHJSTT0mVG0zY3VGblA3QUZ0TVlZQ0NxNmcxR25JY2NZPQ==; _auth=0; _routing_id=\"03420811-cf0d-47b8-a27d-aa3c672da667\"; sessionFunnelEventLogged=1"
+    "Cookie": "_GRECAPTCHA=09ANMylND2z04ZfHrPHDjmvn-VlghZA0aNHuNLrQT5RRz-ZKBoy7wJVmsQuT4D2pMiDjskNCiykDZ-bybU-JpZlmc; csrftoken=a8db45af6278306efce17ea15541b516; _pinterest_sess=TWc9PSZlR1VwMmxoaUNOeDVZa25BSGcwTXdZVlAzVk4xTGhiK1AyNGNGY2F3ZWsvYTJBaEkrT29jTDlPdHQ1SGR2OGhtbHFubnYwQy84NzE5T3VrbHExNUJseHB3UFBZZWxGckhieXJ0Z0tSeHpIQT0mR3RzWVN3cXc4ZmtSQmlKYi9jNDNtdWgxV2tVPQ==; _auth=0; _routing_id=\"e94314e1-c74c-4808-ae9e-057d27ee3ba1\"; sessionFunnelEventLogged=1"
   },
   "cookies": [
     {
       "name": "_GRECAPTCHA",
-      "value": "09ANMylNAdbPAbHcy6BfiL5-bzC_0djLgRUebMV_OVG14-1Iy-LbiF78b1Mupm4AUM2nxGnTKo-J5ucoFRcEzB-LE",
+      "value": "09ANMylND2z04ZfHrPHDjmvn-VlghZA0aNHuNLrQT5RRz-ZKBoy7wJVmsQuT4D2pMiDjskNCiykDZ-bybU-JpZlmc",
       "domain": "www.recaptcha.net",
       "path": "/recaptcha",
-      "expires": 1767985521.395167,
+      "expires": 1767990301.221481,
       "httpOnly": true,
       "secure": true,
       "sameSite": "None"
     },
     {
       "name": "csrftoken",
-      "value": "89c78adda2debeca223501c14d3335dc",
+      "value": "a8db45af6278306efce17ea15541b516",
       "domain": "www.pinterest.com",
       "path": "/",
-      "expires": 1783969511.774588,
+      "expires": 1783974291.844545,
       "httpOnly": false,
       "secure": true,
       "sameSite": "Lax"
     },
     {
       "name": "_pinterest_sess",
-      "value": "TWc9PSZTMEVENUpOOUcvNWJ2WlUwQlZ6TVdYQkNKaDlLcEV0Vzh0eGJMbzYvVXJHcFR5eWdwVjFqZVdGcEpvbVMrOTlVTkhVOWFhYXVQRk90em41c3ZqNTkwNlpscXVnYkh4RUlHY3lxZzNoNHJSTT0mVG0zY3VGblA3QUZ0TVlZQ0NxNmcxR25JY2NZPQ==",
+      "value": "TWc9PSZlR1VwMmxoaUNOeDVZa25BSGcwTXdZVlAzVk4xTGhiK1AyNGNGY2F3ZWsvYTJBaEkrT29jTDlPdHQ1SGR2OGhtbHFubnYwQy84NzE5T3VrbHExNUJseHB3UFBZZWxGckhieXJ0Z0tSeHpIQT0mR3RzWVN3cXc4ZmtSQmlKYi9jNDNtdWgxV2tVPQ==",
       "domain": ".pinterest.com",
       "path": "/",
-      "expires": 1783537511.774901,
+      "expires": 1783542291.844656,
       "httpOnly": true,
       "secure": true,
       "sameSite": "None"
@@ -52,17 +52,17 @@
       "value": "0",
       "domain": ".pinterest.com",
       "path": "/",
-      "expires": 1783537511.774982,
+      "expires": 1783542291.844705,
       "httpOnly": true,
       "secure": true,
       "sameSite": "Lax"
     },
     {
       "name": "_routing_id",
-      "value": "\"03420811-cf0d-47b8-a27d-aa3c672da667\"",
+      "value": "\"e94314e1-c74c-4808-ae9e-057d27ee3ba1\"",
       "domain": "www.pinterest.com",
       "path": "/",
-      "expires": 1752519911.775473,
+      "expires": 1752524691.844751,
       "httpOnly": true,
       "secure": false,
       "sameSite": "Lax"
@@ -72,11 +72,11 @@
       "value": "1",
       "domain": "www.pinterest.com",
       "path": "/",
-      "expires": 1752476717,
+      "expires": 1752481497,
       "httpOnly": false,
       "secure": true,
       "sameSite": "Lax"
     }
   ],
-  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
 }

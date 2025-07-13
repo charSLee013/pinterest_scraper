@@ -240,7 +240,8 @@ class BrowserManager:
         extract_func: Callable[[str], List[Dict]],
         max_scrolls: int = 100,
         scroll_pause: float = 2.0,
-        no_new_data_limit: int = 10
+        no_new_data_limit: int = 10,
+        initial_count: int = 0
     ) -> List[Dict]:
         """智能滚动并收集数据
 
@@ -250,6 +251,7 @@ class BrowserManager:
             max_scrolls: 最大滚动次数
             scroll_pause: 滚动间隔时间
             no_new_data_limit: 连续无新数据的限制次数
+            initial_count: 初始已有数据数量（用于进度条显示）
 
         Returns:
             收集到的数据列表
@@ -272,9 +274,10 @@ class BrowserManager:
                 if len(collected_data) >= target_count:
                     break
 
-        # 创建进度条
-        pbar = tqdm(total=target_count, desc="采集进度", unit="pins",
-                   initial=len(collected_data), leave=False)
+        # 创建进度条，考虑初始已有数据
+        current_progress = initial_count + len(collected_data)
+        pbar = tqdm(total=target_count + initial_count, desc="采集进度", unit="pins",
+                   initial=current_progress, leave=False)
 
         # 退出条件：达到目标数量 OR 达到最大滚动次数 OR 连续无新数据
         while (len(collected_data) < target_count and
@@ -312,10 +315,12 @@ class BrowserManager:
                 consecutive_no_new = 0
                 # 更新进度条
                 pbar.update(new_items_count)
-                pbar.set_postfix({"滚动": scroll_count, "连续无新": 0, "总数": len(collected_data)})
+                total_collected = initial_count + len(collected_data)
+                pbar.set_postfix({"滚动": scroll_count, "连续无新": 0, "总数": total_collected})
             else:
                 consecutive_no_new += 1
-                pbar.set_postfix({"滚动": scroll_count, "连续无新": consecutive_no_new, "总数": len(collected_data)})
+                total_collected = initial_count + len(collected_data)
+                pbar.set_postfix({"滚动": scroll_count, "连续无新": consecutive_no_new, "总数": total_collected})
 
             # 硬性目标检查：达到目标数量立即退出
             if len(collected_data) >= target_count:

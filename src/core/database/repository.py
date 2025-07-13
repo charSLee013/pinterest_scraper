@@ -15,6 +15,7 @@ from loguru import logger
 
 from .base import get_database_session
 from .schema import Pin, DownloadTask, ScrapingSession, CacheMetadata
+from .atomic_saver import AtomicPinSaver
 
 
 class SQLiteRepository:
@@ -29,6 +30,8 @@ class SQLiteRepository:
         """
         self.keyword = keyword
         self.output_dir = output_dir
+        # 初始化原子化保存器
+        self.atomic_saver = AtomicPinSaver(self._get_session)
 
     def _get_session(self):
         """获取数据库会话
@@ -65,7 +68,7 @@ class SQLiteRepository:
                 return get_database_session()
     
     def save_pins_batch(self, pins: List[Dict[str, Any]], query: str, session_id: Optional[str] = None, force_overwrite: bool = False) -> bool:
-        """批量保存Pin数据 - 使用UPSERT避免并发冲突
+        """批量保存Pin数据 - 使用原子化保存策略
 
         Args:
             pins: Pin数据列表
@@ -79,27 +82,32 @@ class SQLiteRepository:
         if not pins:
             return True
 
-        with self._get_session() as session:
-            saved_count = 0
+        # 使用原子化保存器进行批量保存
+        result = self.atomic_saver.save_pins_batch_atomic(pins, query, session_id)
 
-            for pin_data in pins:
-                pin_hash = self._calculate_pin_hash(pin_data)
-                pin_id = pin_data.get('id', str(uuid.uuid4()))
+        # 更新元数据（如果有成功保存的Pin）
+        if result['successful_count'] > 0:
+            try:
+                with self._get_session() as session:
+                    self._update_cache_metadata(session, query)
+                    if session_id:
+                        self._update_session_stats(session, session_id, result['successful_count'])
+            except Exception as e:
+                logger.warning(f"更新元数据失败: {e}")
 
-                # 使用UPSERT操作避免竞态条件
-                if self._upsert_pin(session, pin_data, query, pin_hash, pin_id):
-                    saved_count += 1
+        # 记录保存结果
+        logger.info(f"批量原子化保存完成: 成功{result['successful_count']}, 失败{result['failed_count']}, 跳过{result['skipped_count']}, 查询: {query}")
 
-            # 更新元数据
-            self._update_cache_metadata(session, query)
-            if session_id:
-                self._update_session_stats(session, session_id, len(pins))
+        # 如果有错误，记录详细信息
+        if result['errors']:
+            for error in result['errors'][:5]:  # 只记录前5个错误
+                logger.error(f"保存Pin失败: {error['pin_id']}, 错误: {error['error']}")
 
-            logger.info(f"批量保存完成: {saved_count} 个Pin，查询: {query}")
-            return True
+        # 只要有成功保存的Pin就返回True
+        return result['successful_count'] > 0
 
     def save_pin_immediately(self, pin_data: Dict[str, Any], query: str, session_id: Optional[str] = None) -> bool:
-        """立即保存单个Pin到数据库（无缓冲）
+        """立即保存单个Pin到数据库（原子化）
 
         Args:
             pin_data: Pin数据字典
@@ -112,15 +120,24 @@ class SQLiteRepository:
         if not pin_data:
             return True
 
-        # 直接保存到数据库，不使用缓冲区
-        try:
-            success = self.save_pins_batch([pin_data], query, session_id)
-            if success:
-                logger.debug(f"立即保存Pin成功: {pin_data.get('id')}")
-            return success
-        except Exception as e:
-            logger.error(f"立即保存Pin失败: {pin_data.get('id')}, 错误: {e}")
-            return False
+        # 使用原子化保存器直接保存单个Pin
+        success, error_msg = self.atomic_saver.save_pin_atomic(pin_data, query, session_id)
+
+        if success:
+            logger.debug(f"立即原子化保存Pin成功: {pin_data.get('id')}")
+
+            # 更新元数据
+            try:
+                with self._get_session() as session:
+                    self._update_cache_metadata(session, query)
+                    if session_id:
+                        self._update_session_stats(session, session_id, 1)
+            except Exception as e:
+                logger.warning(f"更新元数据失败: {e}")
+        else:
+            logger.error(f"立即原子化保存Pin失败: {pin_data.get('id')}, 错误: {error_msg}")
+
+        return success
 
 
 
@@ -194,7 +211,7 @@ class SQLiteRepository:
             return False
 
     def _upsert_download_task(self, session, pin_id: str, pin_hash: str, pin_data: Dict[str, Any]):
-        """UPSERT下载任务，避免重复创建
+        """UPSERT下载任务，避免重复创建 - 使用INSERT OR REPLACE策略
 
         Args:
             session: 数据库会话
@@ -208,26 +225,26 @@ class SQLiteRepository:
             return
 
         try:
-            task_dict = {
+            # 使用INSERT OR REPLACE避免SQLAlchemy UPSERT复杂性
+            sql = text("""
+                INSERT OR REPLACE INTO download_tasks (
+                    pin_id, pin_hash, image_url, status, retry_count,
+                    created_at, updated_at
+                ) VALUES (
+                    :pin_id, :pin_hash, :image_url, 'pending', 0,
+                    :created_at, :updated_at
+                )
+            """)
+
+            task_data = {
                 'pin_id': pin_id,
                 'pin_hash': pin_hash,
                 'image_url': image_url,
-                'status': 'pending',
-                'retry_count': 0,
                 'created_at': datetime.utcnow(),
                 'updated_at': datetime.utcnow()
             }
 
-            stmt = insert(DownloadTask).values(**task_dict)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=['pin_id'],
-                set_={
-                    'image_url': stmt.excluded.image_url,
-                    'updated_at': datetime.utcnow()
-                }
-            )
-
-            session.execute(stmt)
+            session.execute(sql, task_data)
             logger.debug(f"UPSERT DownloadTask成功: {pin_id}")
 
         except Exception as e:

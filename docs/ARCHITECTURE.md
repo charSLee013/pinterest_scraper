@@ -51,12 +51,14 @@ Pinterest Scraper v4.0 采用现代化的异步架构，以SQLite为存储基础
   - 混合采集策略
 
 ### 3. SQLiteRepository (数据访问层)
-- **职责**: 数据库操作、UPSERT机制、会话管理
+- **职责**: 数据库操作、原子化保存、会话管理
 - **关键功能**:
-  - 实时Pin保存 (`save_pin_immediately`)
+  - 原子化Pin保存 (`AtomicPinSaver`)
+  - 数据标准化 (`PinDataNormalizer`)
   - 会话状态管理 (`get_incomplete_sessions`, `resume_session`)
-  - 数据去重 (基于UPSERT)
+  - 数据去重 (基于INSERT OR REPLACE)
   - 并发安全保证
+  - SQLAlchemy错误修复
 
 ## 断点续传机制
 
@@ -69,9 +71,9 @@ running → running → interrupted → running → completed
 
 ### 2. 数据流程
 ```
-Pin采集 → 实时保存 → 数据库UPSERT → 状态更新
+Pin采集 → 数据标准化 → 原子化保存 → 状态更新
    ↓         ↓           ↓           ↓
-Browser → SmartScraper → Repository → SQLite
+Browser → Normalizer → AtomicSaver → SQLite
 ```
 
 ### 3. 恢复逻辑
@@ -89,8 +91,9 @@ Browser → SmartScraper → Repository → SQLite
 | 数据存储 | 内存累积 + 批量保存 | 实时数据库保存 |
 | 内存使用 | O(n) 线性增长 | O(1) 常量级别 |
 | 数据安全 | 中断时丢失 | 零数据丢失 |
-| 去重机制 | 内存Set检查 | 数据库UPSERT |
+| 去重机制 | 内存Set检查 | 原子化INSERT OR REPLACE |
 | 断点续传 | 不支持 | 完全支持 |
+| 数据一致性 | 无保证 | 原子化操作保证 |
 
 ### 内存优化策略
 1. **移除内存累积**: 不再保存`collected_pins`列表

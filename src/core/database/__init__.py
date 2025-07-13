@@ -11,6 +11,8 @@ from .schema import Pin, DownloadTask, ScrapingSession, CacheMetadata
 from .base import DatabaseManager, get_database_session, initialize_database
 from .repository import SQLiteRepository
 from .manager_factory import DatabaseManagerFactory
+from .normalizer import PinDataNormalizer
+from .atomic_saver import AtomicPinSaver
 
 __all__ = [
     'Pin',
@@ -21,5 +23,7 @@ __all__ = [
     'DatabaseManagerFactory',
     'initialize_database',
     'get_database_session',
-    'SQLiteRepository'
+    'SQLiteRepository',
+    'PinDataNormalizer',
+    'AtomicPinSaver'
 ]

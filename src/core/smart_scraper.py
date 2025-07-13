@@ -108,12 +108,15 @@ class SmartScraper:
         if self.repository:
             logger.info("启用实时保存模式")
 
-        # 重置状态
-        self._reset_state()
-
-        # 记录采集开始时的基准数量（在重置状态之后）
+        # 记录采集开始时的基准数量（在重置状态之前）
         self._baseline_count = self._get_saved_count_from_db(query) if self.repository else 0
         logger.debug(f"📊 采集基准: 数据库中已有 {self._baseline_count} 个Pin")
+
+        # 重置状态（但保留基准数量信息）
+        self._reset_state()
+
+        # 恢复基准数量（因为_reset_state会重置它）
+        self._baseline_count = self._get_saved_count_from_db(query) if self.repository else 0
 
         # 构建目标URL
         target_url = self._build_url(query, url)
@@ -639,7 +642,8 @@ class SmartScraper:
                 extract_func=extract_pins_from_html,
                 max_scrolls=max_scrolls,
                 scroll_pause=1.5,
-                no_new_data_limit=no_new_data_limit
+                no_new_data_limit=no_new_data_limit,
+                initial_count=self._baseline_count
             )
 
             self.stats["total_scrolls"] = max_scrolls
