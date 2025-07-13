@@ -5,7 +5,6 @@
 工具函数模块
 """
 
-import hashlib
 import json
 import os
 from typing import Any, Dict, List
@@ -37,13 +36,9 @@ def setup_directories(
         term_dir = os.path.join(output_dir, safe_term)
         dirs["term_root"] = term_dir
         dirs["images"] = os.path.join(term_dir, "images")
-        dirs["json"] = os.path.join(term_dir, "json")
-        dirs["cache"] = os.path.join(term_dir, "cache")
     else:
         # 旧的目录结构
         dirs["images"] = os.path.join(output_dir, "images")
-        dirs["json"] = os.path.join(output_dir, "json")
-        dirs["cache"] = os.path.join(output_dir, "cache")
 
     # 创建所有必要的子目录
     for path in dirs.values():
@@ -159,97 +154,5 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', "_", name)
 
 
-def get_pin_hash(pin: Dict) -> str:
-    """计算pin的哈希值，用于缓存识别
-
-    Args:
-        pin: pin数据字典
-
-    Returns:
-        哈希字符串
-    """
-    # 使用id和图片URL作为唯一标识符
-    pin_id = pin.get("id", "")
-    image_url = pin.get("largest_image_url", "")
-
-    # 组合并计算MD5哈希
-    hash_input = f"{pin_id}:{image_url}"
-    return hashlib.md5(hash_input.encode()).hexdigest()
-
-
-def load_cache(cache_file: str) -> Dict:
-    """加载缓存数据
-
-    Args:
-        cache_file: 缓存文件路径
-
-    Returns:
-        缓存数据字典
-    """
-    cache = load_json(cache_file) or {"pins": {}, "downloaded_images": set()}
-
-    # 确保downloaded_images是集合类型，因为JSON不支持集合
-    if "downloaded_images" in cache:
-        cache["downloaded_images"] = set(cache["downloaded_images"])
-    else:
-        cache["downloaded_images"] = set()
-
-    return cache
-
-
-def save_cache(cache_data: Dict, cache_file: str) -> bool:
-    """保存缓存数据
-
-    Args:
-        cache_data: 缓存数据
-        cache_file: 缓存文件路径
-
-    Returns:
-        是否保存成功
-    """
-    # 把set转成list再保存
-    save_data = {
-        "pins": cache_data["pins"],
-        "downloaded_images": list(cache_data["downloaded_images"]),
-    }
-    return save_json(save_data, cache_file)
-
-
-def update_cache_with_pins(pins: List[Dict], cache_file: str) -> Dict:
-    """使用新的pin数据更新缓存
-
-    Args:
-        pins: pin数据列表
-        cache_file: 缓存文件路径
-
-    Returns:
-        更新后的缓存数据
-    """
-    # 加载现有缓存
-    cache = load_cache(cache_file)
-
-    # 更新缓存中的pin数据
-    for pin in pins:
-        pin_hash = get_pin_hash(pin)
-        cache["pins"][pin_hash] = pin
-
-        # 如果pin已下载，记录到已下载集合
-        if pin.get("downloaded", False) and pin.get("download_path"):
-            cache["downloaded_images"].add(pin_hash)
-
-    # 保存更新后的缓存
-    save_cache(cache, cache_file)
-    return cache
-
-
-def get_cached_pins(cache_file: str) -> List[Dict]:
-    """从缓存获取所有已缓存的pin数据
-
-    Args:
-        cache_file: 缓存文件路径
-
-    Returns:
-        缓存的pin数据列表
-    """
-    cache = load_cache(cache_file)
-    return list(cache["pins"].values())
+# 注意：缓存相关函数已移除，现在使用SQLite数据库进行数据管理
+# 如需缓存功能，请使用 src.core.database.repository.SQLiteRepository

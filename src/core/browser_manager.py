@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-统一浏览器管理器 - 激进重构版
+异步浏览器管理器
 
-消除重复的浏览器初始化代码，提供统一的浏览器管理接口
+提供统一的异步浏览器管理接口，支持数据采集和网络拦截功能
 """
 
 import json
@@ -14,16 +14,16 @@ from typing import Dict, List, Optional, Callable, Any
 
 from fake_useragent import UserAgent
 from loguru import logger
-from patchright.sync_api import sync_playwright, Page, BrowserContext, Error
+from patchright.async_api import async_playwright, Page, BrowserContext, Error
 from tqdm import tqdm
 
 from . import config
 
 
 class BrowserManager:
-    """统一的浏览器管理器
-    
-    整合所有浏览器相关操作，消除重复代码
+    """异步浏览器管理器
+
+    提供统一的异步浏览器管理接口，支持数据采集、滚动收集和网络拦截功能
     """
 
     def __init__(
@@ -32,22 +32,25 @@ class BrowserManager:
         timeout: int = config.DEFAULT_TIMEOUT,
         cookie_path: Optional[str] = None,
         headless: bool = True,
-        enable_network_interception: bool = False
+        enable_network_interception: bool = False,
+        browser_type: str = 'chromium'
     ):
         """初始化浏览器管理器
-        
+
         Args:
             proxy: 代理服务器地址
             timeout: 默认超时时间(秒)
             cookie_path: Cookie文件路径
             headless: 是否无头模式
             enable_network_interception: 是否启用网络拦截
+            browser_type: 浏览器类型 ('chromium', 'firefox', 'webkit')
         """
         self.proxy = proxy
         self.timeout = timeout
         self.cookie_path = cookie_path or config.COOKIE_FILE_PATH
         self.headless = headless
         self.enable_network_interception = enable_network_interception
+        self.browser_type = browser_type
         
         # 浏览器实例
         self.playwright_instance = None
@@ -62,17 +65,17 @@ class BrowserManager:
         # 用户代理
         self.user_agent = UserAgent().random
 
-    def start(self) -> bool:
+    async def start(self) -> bool:
         """启动浏览器
-        
+
         Returns:
             启动是否成功
         """
         try:
             logger.info("启动浏览器管理器...")
-            
+
             # 启动Playwright
-            self.playwright_instance = sync_playwright().start()
+            self.playwright_instance = await async_playwright().start()
             
             # 配置启动选项
             launch_options = {
@@ -83,9 +86,7 @@ class BrowserManager:
                     "--disable-gpu",
                     "--disable-extensions",
                     "--disable-infobars",
-                ],
-                # 使用chrome
-                "channel": "chrome",
+                ]
             }
             
             # 代理配置
@@ -94,9 +95,18 @@ class BrowserManager:
                 launch_options["proxy"] = proxy_config
                 logger.info(f"使用代理: {self.proxy}")
             
-            # 启动浏览器
-            self.browser = self.playwright_instance.chromium.launch(**launch_options)
-            
+            # 启动浏览器 - 根据browser_type选择
+            if self.browser_type == 'chromium':
+                self.browser = await self.playwright_instance.chromium.launch(**launch_options)
+            elif self.browser_type == 'firefox':
+                self.browser = await self.playwright_instance.firefox.launch(**launch_options)
+            elif self.browser_type == 'webkit':
+                self.browser = await self.playwright_instance.webkit.launch(**launch_options)
+            else:
+                # 默认使用chromium
+                self.browser = await self.playwright_instance.chromium.launch(**launch_options)
+                logger.warning(f"未知的浏览器类型 {self.browser_type}，使用默认的chromium")
+
             # 创建浏览器上下文
             context_options = {
                 "user_agent": self.user_agent,
@@ -114,12 +124,12 @@ class BrowserManager:
                 except Exception as e:
                     logger.warning(f"加载Cookie失败: {e}")
             
-            self.browser_context = self.browser.new_context(**context_options)
-            self.page = self.browser_context.new_page()
+            self.browser_context = await self.browser.new_context(**context_options)
+            self.page = await self.browser_context.new_page()
             
             # 阻止不必要的资源
             if hasattr(config, "BLOCKED_RESOURCE_TYPES"):
-                self.page.route("**/*", lambda route: (
+                await self.page.route("**/*", lambda route: (
                     route.abort()
                     if route.request.resource_type in config.BLOCKED_RESOURCE_TYPES
                     else route.continue_()
@@ -140,13 +150,13 @@ class BrowserManager:
             logger.error(f"浏览器启动失败: {e}")
             return False
 
-    def stop(self):
+    async def stop(self):
         """关闭浏览器"""
         try:
             if self.page:
-                self.browser_context.close()
-                self.browser.close()
-                self.playwright_instance.stop()
+                await self.browser_context.close()
+                await self.browser.close()
+                await self.playwright_instance.stop()
                 logger.info("浏览器已关闭")
         except Exception as e:
             logger.error(f"关闭浏览器出错: {e}")
@@ -156,24 +166,24 @@ class BrowserManager:
             self.browser = None
             self.playwright_instance = None
 
-    def navigate(self, url: str) -> bool:
+    async def navigate(self, url: str) -> bool:
         """导航到指定URL
-        
+
         Args:
             url: 目标URL
-            
+
         Returns:
             导航是否成功
         """
         try:
             logger.info(f"导航到: {url}")
-            self.page.goto(url, timeout=self.timeout * 1000, wait_until="domcontentloaded")
+            await self.page.goto(url, timeout=self.timeout * 1000, wait_until="domcontentloaded")
             return True
         except Error as e:
             logger.error(f"导航失败: {e}")
             return False
 
-    def scroll_and_collect(
+    async def scroll_and_collect(
         self,
         target_count: int,
         extract_func: Callable[[str], List[Dict]],
@@ -201,7 +211,7 @@ class BrowserManager:
         logger.info(f"开始数据采集，目标: {target_count}")
 
         # 首次提取页面数据（滚动前）
-        html = self.page.content()
+        html = await self.page.content()
         initial_items = extract_func(html)
         for item in initial_items:
             item_id = item.get('id')
@@ -222,18 +232,18 @@ class BrowserManager:
 
             # 滚动页面
             scroll_count += 1
-            self.page.evaluate("window.scrollBy(0, window.innerHeight)")
+            await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
             time.sleep(scroll_pause)
 
             # 等待页面加载
             try:
-                self.page.wait_for_load_state('networkidle', timeout=5000)
+                await self.page.wait_for_load_state('networkidle', timeout=5000)
             except:
                 # 如果等待超时，继续执行
                 pass
 
             # 提取当前页面数据
-            html = self.page.content()
+            html = await self.page.content()
             new_items = extract_func(html)
 
             # 去重并添加新数据
@@ -302,16 +312,16 @@ class BrowserManager:
             except Exception as e:
                 logger.error(f"响应处理器出错: {e}")
 
-    def wait_for_load_state(self, state: str = "networkidle", timeout: int = 30000):
+    async def wait_for_load_state(self, state: str = "networkidle", timeout: int = 30000):
         """等待页面加载状态"""
         try:
-            self.page.wait_for_load_state(state, timeout=timeout)
+            await self.page.wait_for_load_state(state, timeout=timeout)
         except Exception as e:
             logger.debug(f"等待加载状态超时: {e}")
 
-    def get_html(self) -> str:
+    async def get_html(self) -> str:
         """获取当前页面HTML"""
-        return self.page.content()
+        return await self.page.content()
 
     def is_ready(self) -> bool:
         """检查浏览器是否就绪"""

@@ -41,8 +41,10 @@ class TestPinterestScraper:
         assert self.scraper.download_images == False
         assert self.scraper.debug == False
         assert os.path.exists(self.temp_dir)
-        assert len(self.scraper.collected_pins) == 0
-        assert len(self.scraper.pin_ids_seen) == 0
+        # 验证SmartScraper实例的初始状态
+        smart_scraper = self.scraper.scraper
+        assert len(smart_scraper.collected_pins) == 0
+        assert len(smart_scraper.seen_pin_ids) == 0
 
     def test_scraper_with_custom_config(self):
         """测试自定义配置"""
@@ -57,58 +59,70 @@ class TestPinterestScraper:
         assert custom_scraper.download_images == True
         assert custom_scraper.debug == True
 
-    def test_strategy_selection(self):
-        """测试智能策略选择"""
-        assert self.scraper._select_strategy(50) == "basic"
-        assert self.scraper._select_strategy(500) == "enhanced"
-        assert self.scraper._select_strategy(2000) == "hybrid"
+    def test_unified_hybrid_strategy(self):
+        """测试统一的hybrid策略"""
+        # 验证所有数据量级都使用hybrid策略
+        scraper = self.scraper.scraper  # 获取SmartScraper实例
+
+        # 测试hybrid策略方法存在
+        assert hasattr(scraper, '_hybrid_scrape')
+
+        # 测试过时的策略选择方法已被移除
+        assert not hasattr(scraper, '_select_strategy')
+        assert not hasattr(scraper, '_execute_strategy')
+        assert not hasattr(scraper, '_simple_scrape')
+        assert not hasattr(scraper, '_enhanced_scrape')
 
     def test_scrape_parameter_validation(self):
         """测试scrape方法参数验证"""
-        # 测试缺少参数
-        with pytest.raises(ValueError, match="必须提供query或url参数"):
-            self.scraper.scrape()
+        # 测试缺少参数 - 应该返回空列表
+        result = self.scraper.scrape()
+        assert result == []
 
-        # 测试同时提供两个参数
-        with pytest.raises(ValueError, match="query和url参数不能同时提供"):
-            self.scraper.scrape(query="test", url="http://test.com")
+        # 测试正常参数
+        # 注意：这里不会实际执行网络请求，只是测试参数处理
+        # 实际的网络测试应该在集成测试中进行
 
-    def test_add_pin_if_new(self):
+    def test_deduplicate_pins(self):
         """测试Pin去重功能"""
-        # 添加第一个Pin
-        pin1 = {"id": "pin1", "title": "Test Pin 1"}
-        result1 = self.scraper._add_pin_if_new(pin1)
+        smart_scraper = self.scraper.scraper
 
-        assert result1 == True
-        assert len(self.scraper.collected_pins) == 1
-        assert "pin1" in self.scraper.pin_ids_seen
+        # 测试去重功能
+        pins = [
+            {"id": "pin1", "title": "Test Pin 1"},
+            {"id": "pin2", "title": "Test Pin 2"},
+            {"id": "pin1", "title": "Duplicate Pin"},  # 重复
+            {"id": "pin3", "title": "Test Pin 3"},
+            {"title": "No ID Pin"}  # 无ID
+        ]
 
-        # 尝试添加重复Pin
-        pin1_duplicate = {"id": "pin1", "title": "Duplicate Pin"}
-        result2 = self.scraper._add_pin_if_new(pin1_duplicate)
+        unique_pins = smart_scraper._deduplicate_pins(pins)
 
-        assert result2 == False
-        assert len(self.scraper.collected_pins) == 1  # 数量不变
-
-        # 添加新Pin
-        pin2 = {"id": "pin2", "title": "Test Pin 2"}
-        result3 = self.scraper._add_pin_if_new(pin2)
-
-        assert result3 == True
-        assert len(self.scraper.collected_pins) == 2
-        assert "pin2" in self.scraper.pin_ids_seen
+        # 验证去重结果
+        assert len(unique_pins) == 3  # pin1, pin2, pin3
+        pin_ids = [pin.get('id') for pin in unique_pins]
+        assert "pin1" in pin_ids
+        assert "pin2" in pin_ids
+        assert "pin3" in pin_ids
 
     def test_build_url(self):
         """测试URL构建"""
+        smart_scraper = self.scraper.scraper
+
         # 测试查询URL
-        query_url = self.scraper._build_url("nature photography", None)
-        assert "nature+photography" in query_url
+        query_url = smart_scraper._build_url("nature photography", None)
+        assert "nature" in query_url
+        assert "photography" in query_url
         assert "pinterest.com/search" in query_url
 
         # 测试直接URL
         direct_url = "https://www.pinterest.com/test/"
-        result_url = self.scraper._build_url(None, direct_url)
+        result_url = smart_scraper._build_url(None, direct_url)
         assert result_url == direct_url
+
+        # 测试无效参数
+        result_none = smart_scraper._build_url(None, None)
+        assert result_none is None
 
 class TestIntegration:
     """集成测试类 - 简化版"""

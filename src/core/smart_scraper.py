@@ -63,7 +63,7 @@ class SmartScraper:
             "duplicates_filtered": 0
         }
 
-    def scrape(
+    async def scrape(
         self,
         query: Optional[str] = None,
         url: Optional[str] = None,
@@ -97,9 +97,9 @@ class SmartScraper:
         logger.info("使用统一的hybrid混合策略")
 
         # 实时去重采集主循环
-        return self._adaptive_scrape_with_dedup(query, target_url, target_count)
+        return await self._adaptive_scrape_with_dedup(query, target_url, target_count)
 
-    def _adaptive_scrape_with_dedup(
+    async def _adaptive_scrape_with_dedup(
         self,
         query: Optional[str],
         target_url: str,
@@ -141,7 +141,7 @@ class SmartScraper:
 
             # 执行hybrid混合策略
             logger.info(f"执行hybrid策略，目标: {current_target}")
-            new_pins = self._hybrid_scrape(query, current_target)
+            new_pins = await self._hybrid_scrape(query, current_target)
             attempted_strategies.append("hybrid")
 
             if not new_pins:
@@ -221,58 +221,9 @@ class SmartScraper:
 
         return max(min_target, min(adjusted_target, max_target))
 
-    def _select_round_strategy(
-        self,
-        initial_strategy: str,
-        attempted_strategies: List[str],
-        remaining_needed: int,
-        round_num: int
-    ) -> str:
-        """为当前轮次选择最佳策略 - 统一使用hybrid策略
 
-        Args:
-            initial_strategy: 初始策略
-            attempted_strategies: 已尝试的策略
-            remaining_needed: 还需要的数量
-            round_num: 当前轮次
 
-        Returns:
-            选择的策略名称
-        """
-        # 统一使用hybrid策略，适用于所有轮次和数据量级
-        return "hybrid"
 
-    def _execute_strategy(
-        self,
-        strategy: str,
-        query: Optional[str],
-        target_url: str,
-        target_count: int
-    ) -> List[Dict]:
-        """执行指定的采集策略
-
-        Args:
-            strategy: 策略名称
-            query: 搜索关键词
-            target_url: 目标URL
-            target_count: 目标数量
-
-        Returns:
-            采集到的Pin数据列表
-        """
-        try:
-            if strategy == "simple":
-                return self._simple_scrape(target_url, target_count)
-            elif strategy == "enhanced":
-                return self._enhanced_scrape(target_url, target_count)
-            elif strategy == "hybrid":
-                return self._hybrid_scrape(query, target_count)
-            else:
-                logger.error(f"未知策略: {strategy}")
-                return []
-        except Exception as e:
-            logger.error(f"执行策略 {strategy} 时出错: {e}")
-            return []
 
     def _merge_and_deduplicate_incremental(
         self,
@@ -302,155 +253,13 @@ class SmartScraper:
 
         return merged_pins, new_unique_count
 
-    def _select_strategy(self, target_count: int) -> str:
-        """智能选择采集策略 - 统一使用hybrid策略
 
-        Args:
-            target_count: 目标数量
 
-        Returns:
-            策略名称
-        """
-        # 统一使用hybrid策略，适用于所有数据量级
-        return "hybrid"
 
-    def _simple_scrape(self, url: str, target_count: int) -> List[Dict]:
-        """简单采集策略 - 基础滚动
 
-        策略说明：
-        - 滚动页面直到连续无新数据
-        - target_count用作安全上限，不是硬性目标
-        - 真实停止条件：连续无新数据 OR 达到安全上限
-        """
-        browser = BrowserManager(
-            proxy=self.proxy,
-            timeout=self.timeout,
-            cookie_path=self.cookie_path,
-            headless=True  # 始终使用无头模式，避免显示浏览器窗口
-        )
 
-        try:
-            if not browser.start():
-                return []
 
-            if not browser.navigate(url):
-                return []
-
-            time.sleep(config.INITIAL_WAIT_TIME)
-
-            # 滚动策略：真实的"连续无新数据"退出逻辑
-            # 基于目标数量动态设置滚动次数，移除硬编码限制
-            min_scrolls = 10  # 最少滚动次数
-            max_scrolls = max(target_count * 3, min_scrolls)  # 基于目标数量动态调整，移除200的硬编码限制
-
-            # 连续无新数据的限制：真实反映Pinterest页面的加载特性
-            no_new_data_limit = 10  # 连续10次无新数据才停止，更符合实际情况
-
-            logger.info(f"滚动策略: 连续{no_new_data_limit}次无新数据停止，最大滚动{max_scrolls}次")
-
-            # 简单滚动收集
-            pins = browser.scroll_and_collect(
-                target_count=target_count,
-                extract_func=extract_pins_from_html,
-                max_scrolls=max_scrolls,
-                scroll_pause=1.5,
-                no_new_data_limit=no_new_data_limit
-            )
-
-            self.stats["total_scrolls"] = max_scrolls
-            self.stats["html_extractions"] = len(pins)
-
-            return pins
-
-        except Exception as e:
-            logger.error(f"简单采集出错: {e}")
-            return []
-        finally:
-            browser.stop()
-
-    def _enhanced_scrape(self, url: str, target_count: int) -> List[Dict]:
-        """增强采集策略 - 网络拦截 + 深度滚动"""
-        logger.info(f"执行增强采集策略，目标: {target_count}")
-
-        # 创建网络拦截器，传入目标数量用于进度条
-        interceptor = NetworkInterceptor(max_cache_size=target_count * 2, verbose=False, target_count=target_count)
-
-        browser = BrowserManager(
-            proxy=self.proxy,
-            timeout=self.timeout,
-            cookie_path=self.cookie_path,
-            headless=True,  # 始终使用无头模式，避免显示浏览器窗口
-            enable_network_interception=True
-        )
-        
-        try:
-            if not browser.start():
-                return []
-            
-            # 添加网络拦截处理器
-            browser.add_request_handler(interceptor._handle_request)
-            browser.add_response_handler(interceptor._handle_response)
-            
-            if not browser.navigate(url):
-                return []
-            
-            time.sleep(config.INITIAL_WAIT_TIME)
-
-            # 深度滚动直到达到目标
-            consecutive_no_new = 0
-            max_consecutive = 20  # 增加耐心，避免过早停止
-            scroll_count = 0
-            max_scrolls = max(target_count // 2, 50)  # 基于目标数量动态调整，移除300的硬编码限制
-
-            logger.info(f"开始深度滚动，最大滚动: {max_scrolls}, 无新数据限制: {max_consecutive}")
-
-            while (len(interceptor.extracted_pins) < target_count and
-                   consecutive_no_new < max_consecutive and
-                   scroll_count < max_scrolls):
-
-                pins_before = len(interceptor.extracted_pins)
-
-                # 滚动页面
-                browser.page.evaluate("window.scrollBy(0, window.innerHeight)")
-                time.sleep(2)
-                browser.wait_for_load_state('networkidle', timeout=10000)
-
-                pins_after = len(interceptor.extracted_pins)
-                scroll_count += 1
-
-                if pins_after > pins_before:
-                    consecutive_no_new = 0
-                else:
-                    consecutive_no_new += 1
-
-            # 关闭进度条
-            interceptor.close_progress_bar()
-
-            # 记录停止原因
-            if len(interceptor.extracted_pins) >= target_count:
-                stop_reason = "达到目标数量"
-            elif scroll_count >= max_scrolls:
-                stop_reason = f"达到最大滚动次数 ({max_scrolls})"
-            elif consecutive_no_new >= max_consecutive:
-                stop_reason = f"连续 {consecutive_no_new} 次无新数据"
-            else:
-                stop_reason = "未知原因"
-
-            collected_count = len(interceptor.extracted_pins)
-            logger.info(f"增强采集完成: {collected_count}/{target_count} ({stop_reason})")
-
-            self.stats["total_scrolls"] = scroll_count
-            self.stats["api_calls_intercepted"] = len(interceptor.api_responses)
-
-            return list(interceptor.extracted_pins)[:target_count]
-            
-        except Exception as e:
-            logger.error(f"增强采集出错: {e}")
-            return []
-        finally:
-            browser.stop()
-
-    def _hybrid_scrape(self, query: str, target_count: int) -> List[Dict]:
+    async def _hybrid_scrape(self, query: str, target_count: int) -> List[Dict]:
         """混合采集策略 - 搜索 + Pin详情页深度扩展
 
         策略说明：
@@ -467,7 +276,7 @@ class SmartScraper:
 
         # 第一阶段直接使用用户指定的目标数量，设置合理的安全下限
         max_first_phase = max(target_count, 100)  # 使用target_count，最小100作为安全下限
-        base_pins = self._simple_scrape(search_url, max_first_phase)
+        base_pins = await self._search_phase_scrape(search_url, max_first_phase)
 
         if len(base_pins) >= target_count:
             logger.info(f"第一阶段已达到目标，获得 {len(base_pins)} 个Pin")
@@ -499,7 +308,7 @@ class SmartScraper:
                 visited_pins.add(pin_id)
 
                 # 采集Pin详情页的相关推荐
-                related_pins = self._scrape_pin_detail_with_queue(pin_id, target_count - len(all_pins))
+                related_pins = await self._scrape_pin_detail_with_queue(pin_id, target_count - len(all_pins))
 
                 if related_pins:
                     # 有新数据，重置计数器
@@ -560,7 +369,7 @@ class SmartScraper:
         # 返回实际采集到的所有Pin，不截断
         return all_pins
 
-    def _scrape_pin_detail_with_queue(self, pin_id: str, max_count: int = 50) -> List[Dict]:
+    async def _scrape_pin_detail_with_queue(self, pin_id: str, max_count: int = 50) -> List[Dict]:
         """采集单个Pin详情页的相关推荐 - 带队列管理版本
 
         实现策略：
@@ -580,13 +389,13 @@ class SmartScraper:
         )
 
         try:
-            if not browser.start():
+            if not await browser.start():
                 return []
 
             browser.add_request_handler(interceptor._handle_request)
             browser.add_response_handler(interceptor._handle_response)
 
-            if not browser.navigate(pin_url):
+            if not await browser.navigate(pin_url):
                 return []
 
             time.sleep(2)
@@ -604,13 +413,13 @@ class SmartScraper:
                 pins_before = len(interceptor.extracted_pins)
 
                 # 滚动页面
-                browser.page.evaluate("window.scrollBy(0, window.innerHeight)")
+                await browser.page.evaluate("window.scrollBy(0, window.innerHeight)")
                 time.sleep(1.5)
                 scroll_count += 1
 
                 # 等待页面加载
                 try:
-                    browser.page.wait_for_load_state('networkidle', timeout=3000)
+                    await browser.page.wait_for_load_state('networkidle', timeout=3000)
                 except:
                     pass
 
@@ -630,11 +439,11 @@ class SmartScraper:
             logger.debug(f"Pin详情页采集出错: {e}")
             return []
         finally:
-            browser.stop()
+            await browser.stop()
 
-    def _scrape_pin_detail(self, pin_id: str, max_count: int = 50) -> List[Dict]:
+    async def _scrape_pin_detail(self, pin_id: str, max_count: int = 50) -> List[Dict]:
         """采集单个Pin详情页的相关推荐 - 兼容性方法"""
-        return self._scrape_pin_detail_with_queue(pin_id, max_count)
+        return await self._scrape_pin_detail_with_queue(pin_id, max_count)
 
     def _build_url(self, query: Optional[str], url: Optional[str]) -> Optional[str]:
         """构建目标URL"""
@@ -693,3 +502,56 @@ class SmartScraper:
             self.stats["duplicates_filtered"] += duplicates_count
 
         return unique_pins
+
+    async def _search_phase_scrape(self, url: str, target_count: int) -> List[Dict]:
+        """搜索阶段采集 - 基础滚动采集
+
+        Args:
+            url: 搜索URL
+            target_count: 目标数量
+
+        Returns:
+            采集到的Pin数据列表
+        """
+        browser = BrowserManager(
+            proxy=self.proxy,
+            timeout=self.timeout,
+            cookie_path=self.cookie_path,
+            headless=True
+        )
+
+        try:
+            if not await browser.start():
+                return []
+
+            if not await browser.navigate(url):
+                return []
+
+            time.sleep(config.INITIAL_WAIT_TIME)
+
+            # 滚动策略：基于目标数量动态调整
+            min_scrolls = 10
+            max_scrolls = max(target_count * 3, min_scrolls)
+            no_new_data_limit = 10
+
+            logger.info(f"搜索阶段滚动策略: 连续{no_new_data_limit}次无新数据停止，最大滚动{max_scrolls}次")
+
+            # 滚动收集
+            pins = await browser.scroll_and_collect(
+                target_count=target_count,
+                extract_func=extract_pins_from_html,
+                max_scrolls=max_scrolls,
+                scroll_pause=1.5,
+                no_new_data_limit=no_new_data_limit
+            )
+
+            self.stats["total_scrolls"] = max_scrolls
+            self.stats["html_extractions"] = len(pins)
+
+            return pins
+
+        except Exception as e:
+            logger.error(f"搜索阶段采集出错: {e}")
+            return []
+        finally:
+            await browser.stop()

@@ -83,28 +83,28 @@ def basic_url_scraping():
         logger.error("❌ 未能获取到Pin数据")
 
 
-def smart_strategy_example():
-    """智能策略选择示例"""
-    logger.info("=== 智能策略选择示例 ===")
+def unified_hybrid_strategy_example():
+    """统一混合策略示例"""
+    logger.info("=== 统一混合策略示例 ===")
 
     scraper = PinterestScraper(
-        output_dir="output/smart_strategy",
+        output_dir="output/unified_strategy",
         download_images=False,
         debug=False
     )
 
-    # 小量数据 - 自动选择基础策略
-    logger.info("小量数据采集（自动选择基础策略）")
+    # 小量数据 - 使用统一的hybrid策略
+    logger.info("小量数据采集（使用统一的hybrid策略）")
     pins_small = scraper.scrape(query="minimalist design", count=50)
     logger.info(f"获取到 {len(pins_small)} 个Pin")
 
-    # 中量数据 - 自动选择增强策略
-    logger.info("中量数据采集（自动选择增强策略）")
+    # 中量数据 - 使用统一的hybrid策略
+    logger.info("中量数据采集（使用统一的hybrid策略）")
     pins_medium = scraper.scrape(query="vintage photography", count=500)
     logger.info(f"获取到 {len(pins_medium)} 个Pin")
 
-    # 大量数据 - 自动选择混合策略（关键词搜索 + Pin详情页深度扩展）
-    logger.info("大量数据采集（自动选择混合策略：关键词搜索 + Pin详情页深度扩展）")
+    # 大量数据 - 使用统一的hybrid策略（关键词搜索 + Pin详情页深度扩展）
+    logger.info("大量数据采集（使用统一的hybrid策略：关键词搜索 + Pin详情页深度扩展）")
     pins_large = scraper.scrape(query="landscape art", count=2000)
     logger.info(f"获取到 {len(pins_large)} 个Pin - 突破传统限制！")
 
@@ -153,7 +153,7 @@ def main():
         basic_url_scraping()
         print()
 
-        smart_strategy_example()
+        unified_hybrid_strategy_example()
         print()
 
         custom_configuration_example()

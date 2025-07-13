@@ -21,7 +21,7 @@ from patchright.sync_api import sync_playwright, Page, BrowserContext, Response,
 from tqdm import tqdm
 
 from ..core import config
-from ..core.browser import Browser
+# Browser import removed - using BrowserManager instead
 
 
 class PinDataExtractor:

@@ -1,7 +1,7 @@
 [project]
 name = "pinterest-scraper"
-version = "2.0.0"
-description = "Pinterest数据采集工具，支持关键词搜索和Pin详情页扩展策略"
+version = "3.4.0"
+description = "Pinterest数据采集工具，支持关键词搜索、Pin详情页扩展策略和实时进度可视化"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
@@ -26,11 +26,17 @@ dependencies = [
     "loguru>=0.7.0",
     "python-dotenv>=1.0.0",
     "fake-useragent>=1.4.0",
-    "loguru",
 
-    # 网络分析模块依赖
+    # 数据库依赖
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.12.0",
+
+    # 异步依赖
+    "aiohttp>=3.8.0",
     "aiofiles>=23.2.0",
     "asyncio-throttle>=1.0.2",
+
+    # 网络分析模块依赖
     "tldextract>=5.1.0",
 
     # 可选依赖（保留兼容性）
@@ -43,6 +49,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
     "pytest-asyncio>=0.21.0",
     "black>=23.0.0",
     "isort>=5.12.0",
@@ -66,3 +73,9 @@ target-version = ['py310']
 [tool.isort]
 profile = "black"
 line_length = 88
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.0.0",
+]
