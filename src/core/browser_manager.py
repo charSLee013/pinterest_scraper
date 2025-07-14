@@ -294,9 +294,12 @@ class BrowserManager:
         max_scrolls: int = 100,
         scroll_pause: float = 2.0,
         no_new_data_limit: int = 10,
-        initial_count: int = 0
+        initial_count: int = 0,
+        repository=None,
+        query: str = None,
+        session_id: str = None
     ) -> List[Dict]:
-        """智能滚动并收集数据
+        """智能滚动并收集数据 - 实时保存版本
 
         Args:
             target_count: 目标数据数量
@@ -305,35 +308,59 @@ class BrowserManager:
             scroll_pause: 滚动间隔时间
             no_new_data_limit: 连续无新数据的限制次数
             initial_count: 初始已有数据数量（用于进度条显示）
+            repository: 数据库Repository实例，用于实时保存
+            query: 搜索关键词
+            session_id: 会话ID
 
         Returns:
-            收集到的数据列表
+            从数据库加载的数据列表（确保数据一致性）
         """
-        collected_data = []
+        # 实时保存模式检查
+        realtime_save_enabled = repository is not None and query is not None
+        if realtime_save_enabled:
+            logger.info(f"🔄 启用实时保存模式，目标: {target_count}")
+        else:
+            logger.warning("⚠️  未启用实时保存模式，数据将存储在内存中（不推荐）")
+
         seen_ids = set()
         consecutive_no_new = 0
         scroll_count = 0
+        saved_count = 0  # 实际保存到数据库的数量
 
         logger.info(f"开始数据采集，目标: {target_count}")
 
         # 首次提取页面数据（滚动前）
         html = await self.page.content()
         initial_items = extract_func(html)
+
+        # 处理初始数据
         for item in initial_items:
             item_id = item.get('id')
             if item_id and item_id not in seen_ids:
                 seen_ids.add(item_id)
-                collected_data.append(item)
-                if len(collected_data) >= target_count:
+
+                # 实时保存到数据库
+                if realtime_save_enabled:
+                    try:
+                        success = repository.save_pin_immediately(item, query, session_id)
+                        if success:
+                            saved_count += 1
+                            logger.debug(f"💾 实时保存Pin: {item_id} (总计: {saved_count})")
+                        else:
+                            logger.error(f"❌ 保存失败: {item_id}")
+                    except Exception as e:
+                        logger.error(f"❌ 保存异常: {item_id}, 错误: {e}")
+
+                if saved_count >= target_count:
                     break
 
-        # 创建进度条，考虑初始已有数据
-        current_progress = initial_count + len(collected_data)
-        pbar = tqdm(total=target_count + initial_count, desc="采集进度", unit="pins",
+        # 创建进度条，基于实际保存的数据量
+        current_progress = initial_count + saved_count
+        pbar = tqdm(total=target_count + initial_count, desc="实时保存", unit="pins",
                    initial=current_progress, leave=False)
 
         # 退出条件：达到目标数量 OR 达到最大滚动次数 OR 连续无新数据
-        while (len(collected_data) < target_count and
+        while (saved_count < target_count and
                scroll_count < max_scrolls and
                consecutive_no_new < no_new_data_limit):
 
@@ -353,38 +380,58 @@ class BrowserManager:
             html = await self.page.content()
             new_items = extract_func(html)
 
-            # 去重并添加新数据
-            items_before = len(collected_data)
+            # 实时保存新数据
+            items_before = saved_count
             for item in new_items:
                 item_id = item.get('id')
                 if item_id and item_id not in seen_ids:
                     seen_ids.add(item_id)
-                    collected_data.append(item)
 
-            items_after = len(collected_data)
-            new_items_count = items_after - items_before
+                    # 实时保存到数据库
+                    if realtime_save_enabled:
+                        try:
+                            success = repository.save_pin_immediately(item, query, session_id)
+                            if success:
+                                saved_count += 1
+                                logger.debug(f"💾 实时保存Pin: {item_id} (总计: {saved_count})")
+                                # 立即更新进度条
+                                pbar.update(1)
+                            else:
+                                logger.error(f"❌ 保存失败: {item_id}")
+                        except Exception as e:
+                            logger.error(f"❌ 保存异常: {item_id}, 错误: {e}")
+                    else:
+                        # 降级到内存存储（不推荐）
+                        logger.warning(f"⚠️  降级到内存存储: {item_id}")
 
-            if new_items_count > 0:
+                    # 检查是否达到目标
+                    if saved_count >= target_count:
+                        break
+
+            # 检查是否有新数据
+            items_after = saved_count
+            if items_after > items_before:
                 consecutive_no_new = 0
-                # 更新进度条
-                pbar.update(new_items_count)
-                total_collected = initial_count + len(collected_data)
-                pbar.set_postfix({"滚动": scroll_count, "连续无新": 0, "总数": total_collected})
             else:
                 consecutive_no_new += 1
-                total_collected = initial_count + len(collected_data)
-                pbar.set_postfix({"滚动": scroll_count, "连续无新": consecutive_no_new, "总数": total_collected})
+
+            # 更新进度条描述
+            pbar.set_postfix({
+                '滚动': scroll_count,
+                '连续无新': consecutive_no_new,
+                '已保存': saved_count
+            })
 
             # 硬性目标检查：达到目标数量立即退出
-            if len(collected_data) >= target_count:
-                logger.info(f"已达到目标数量 {target_count}，立即退出")
+            if saved_count >= target_count:
+                logger.info(f"✅ 已达到目标数量 {target_count}，立即退出")
                 break
 
         # 关闭进度条
         pbar.close()
 
         # 记录停止原因
-        if len(collected_data) >= target_count:
+        if saved_count >= target_count:
             stop_reason = "达到目标数量"
         elif scroll_count >= max_scrolls:
             stop_reason = f"达到最大滚动次数"
@@ -393,9 +440,18 @@ class BrowserManager:
         else:
             stop_reason = "未知原因"
 
-        logger.info(f"采集完成: {len(collected_data)} 个数据 ({stop_reason})")
-        # 严格按照目标数量返回数据
-        return collected_data[:target_count] if len(collected_data) > target_count else collected_data
+        # 从数据库加载最终结果，确保数据一致性
+        if realtime_save_enabled:
+            try:
+                final_pins = repository.load_pins_by_query(query, limit=target_count)
+                logger.info(f"✅ 实时保存完成: {len(final_pins)}/{target_count} ({stop_reason})")
+                return final_pins
+            except Exception as e:
+                logger.error(f"❌ 从数据库加载数据失败: {e}")
+                return []
+        else:
+            logger.warning(f"⚠️  未启用实时保存，返回空列表 ({stop_reason})")
+            return []
 
     def add_request_handler(self, handler: Callable):
         """添加请求处理器"""

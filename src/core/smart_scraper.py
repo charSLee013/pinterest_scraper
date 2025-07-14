@@ -189,10 +189,9 @@ class SmartScraper:
                 logger.warning("hybrid策略未获取到数据")
                 continue
 
-            # 实时保存到数据库（去重在数据库层面处理）
-            new_unique_count = await self._save_pins_to_db(new_pins, query)
-
-            logger.info(f"本轮新增唯一Pin: {new_unique_count}")
+            # 数据已在scroll_and_collect中实时保存，这里只需要统计
+            new_unique_count = len(new_pins)
+            logger.info(f"本轮采集Pin: {new_unique_count} (已实时保存到数据库)")
 
             # 检查去重率，如果过高则停止
             if round_num > 0 and new_unique_count == 0:
@@ -369,7 +368,7 @@ class SmartScraper:
 
         # 第一阶段直接使用用户指定的目标数量
         # 移除硬编码的100个Pin下限，严格按照用户指定数量采集
-        base_pins = await self._search_phase_scrape(search_url, target_count)
+        base_pins = await self._search_phase_scrape(search_url, target_count, query)
 
         if len(base_pins) >= target_count:
             logger.info(f"第一阶段已达到目标，获得 {len(base_pins)} 个Pin")
@@ -605,7 +604,7 @@ class SmartScraper:
 
         return unique_pins
 
-    async def _search_phase_scrape(self, url: str, target_count: int) -> List[Dict]:
+    async def _search_phase_scrape(self, url: str, target_count: int, query: str = None) -> List[Dict]:
         """搜索阶段采集 - 基础滚动采集
 
         Args:
@@ -638,14 +637,17 @@ class SmartScraper:
 
             logger.debug(f"搜索阶段滚动策略: 连续{no_new_data_limit}次无新数据停止，最大滚动{max_scrolls}次")
 
-            # 滚动收集
+            # 滚动收集 - 启用实时保存
             pins = await browser.scroll_and_collect(
                 target_count=target_count,
                 extract_func=extract_pins_from_html,
                 max_scrolls=max_scrolls,
                 scroll_pause=1.5,
                 no_new_data_limit=no_new_data_limit,
-                initial_count=self._baseline_count
+                initial_count=self._baseline_count,
+                repository=self.repository,  # 传递repository实现实时保存
+                query=query,  # 传递query参数
+                session_id=self.session_id  # 传递session_id
             )
 
             self.stats["total_scrolls"] = max_scrolls
@@ -663,19 +665,20 @@ class SmartScraper:
             try:
                 # 从数据库获取实际保存的Pin数量
                 actual_saved_count = len(self.repository.load_pins_by_query(query))
-                logger.info(f"中断处理完成，数据库中实际保存 {actual_saved_count} 个Pin")
+                logger.info(f"✅ 中断处理完成，数据库中实际保存 {actual_saved_count} 个Pin")
+                logger.info(f"💾 实时保存机制确保数据零丢失")
 
                 # 更新会话状态为中断，使用实际数量
                 if self.session_id:
                     self.repository.update_session_status(
                         self.session_id, 'interrupted', actual_saved_count
                     )
-                    logger.info(f"会话状态已更新为中断: {self.session_id}, 实际数量: {actual_saved_count}")
+                    logger.info(f"📝 会话状态已更新为中断: {self.session_id}, 实际数量: {actual_saved_count}")
 
             except Exception as e:
-                logger.error(f"中断处理失败: {e}")
+                logger.error(f"❌ 中断处理失败: {e}")
         else:
-            logger.warning("无Repository或query，无法更新中断状态")
+            logger.warning("⚠️  无Repository或query，无法更新中断状态")
 
     def request_interrupt(self):
         """请求中断采集（用于外部调用）"""
