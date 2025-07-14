@@ -58,7 +58,8 @@ class PinterestScraper:
         download_images: bool = True,
         proxy: Optional[str] = None,
         debug: bool = False,
-        prefer_requests: bool = False
+        prefer_requests: bool = False,
+        max_concurrent: int = 15
     ):
         """初始化Pinterest爬虫
 
@@ -68,12 +69,14 @@ class PinterestScraper:
             proxy: 代理服务器
             debug: 调试模式
             prefer_requests: 是否启用性能模式（推荐，4倍速度提升）
+            max_concurrent: 最大并发下载数
         """
         self.output_dir = output_dir
         self.download_images = download_images
         self.proxy = proxy
         self.prefer_requests = prefer_requests
         self.debug = debug
+        self.max_concurrent = max_concurrent
 
         # 注意：数据库和下载管理器现在在scrape方法中按关键词创建
         # 这样可以确保每个关键词使用独立的数据库文件
@@ -143,7 +146,7 @@ class PinterestScraper:
             self.download_manager = DownloadTaskManager(
                 keyword=work_name,
                 output_dir=self.output_dir,
-                max_concurrent=15,
+                max_concurrent=self.max_concurrent,
                 auto_start=False,
                 prefer_requests=self.prefer_requests
             )

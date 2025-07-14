@@ -10,9 +10,13 @@
 
 import os
 import asyncio
+import json
+import re
+import requests
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from collections import defaultdict
+import requests
 
 from loguru import logger
 from tqdm import tqdm
@@ -21,6 +25,7 @@ from ..core.database.repository import SQLiteRepository
 from ..core.database.manager_factory import DatabaseManagerFactory
 from ..core.download.task_manager import DownloadTaskManager
 from ..utils.utils import sanitize_filename
+from ..utils.downloader import download_image_with_fallback
 
 
 class ImageDownloader:
@@ -30,10 +35,10 @@ class ImageDownloader:
     支持单关键词和全关键词模式。
     """
     
-    def __init__(self, output_dir: str = "output", max_concurrent: int = 15, 
+    def __init__(self, output_dir: str = "output", max_concurrent: int = 15,
                  proxy: Optional[str] = None, prefer_requests: bool = True):
         """初始化图片下载器
-        
+
         Args:
             output_dir: 输出目录
             max_concurrent: 最大并发下载数
@@ -44,8 +49,230 @@ class ImageDownloader:
         self.max_concurrent = max_concurrent
         self.proxy = proxy
         self.prefer_requests = prefer_requests
-        
+        self.browser_session = None  # 浏览器会话管理器
+
         logger.debug(f"图片下载器初始化: {output_dir}, 并发数: {max_concurrent}")
+
+    async def _ensure_browser_session(self):
+        """确保浏览器会话可用"""
+        if self.browser_session is None:
+            try:
+                # 动态导入以避免循环依赖
+                from ..core.download.browser_session import BrowserSessionManager
+
+                logger.info("正在初始化浏览器会话以获取真实Headers...")
+                self.browser_session = BrowserSessionManager(
+                    proxy=self.proxy,
+                    headless=True
+                )
+
+                # 先尝试加载已保存的会话
+                if self.browser_session.load_session_from_file():
+                    logger.info("已从文件加载浏览器会话")
+                    return True
+
+                # 创建新的浏览器会话
+                logger.info("创建新的浏览器会话...")
+                session_initialized = await self.browser_session.initialize_session()
+
+                if session_initialized:
+                    # 保存会话到文件
+                    try:
+                        self.browser_session.save_session_to_file()
+                        logger.debug("浏览器会话信息已保存到文件")
+                    except Exception as save_error:
+                        logger.warning(f"保存会话文件失败: {save_error}")
+
+                    logger.info("浏览器会话初始化成功")
+                    return True
+                else:
+                    logger.warning("浏览器会话初始化失败，将使用默认headers")
+                    self.browser_session = None
+                    return False
+
+            except ImportError as e:
+                logger.error(f"无法导入BrowserSessionManager: {e}")
+                self.browser_session = None
+                return False
+            except Exception as e:
+                logger.error(f"初始化浏览器会话出错: {e}")
+                self.browser_session = None
+                return False
+
+        return True
+
+    def _get_session_headers(self) -> Dict[str, str]:
+        """获取会话headers，优先使用真实浏览器会话"""
+        # 尝试使用真实浏览器会话headers
+        if self.browser_session:
+            try:
+                headers = self.browser_session.get_session_headers()
+                if headers and isinstance(headers, dict) and len(headers) > 0:
+                    logger.debug("使用真实浏览器会话headers")
+                    if 'User-Agent' in headers:
+                        return headers
+                    else:
+                        logger.warning("浏览器会话headers缺少User-Agent，回退到默认headers")
+                else:
+                    logger.warning("浏览器会话headers为空，回退到默认headers")
+            except Exception as e:
+                logger.warning(f"获取浏览器会话headers失败: {e}，回退到默认headers")
+
+        # 回退到默认headers
+        logger.debug("使用默认headers")
+        return self._get_default_headers()
+
+    def _get_default_headers(self) -> Dict[str, str]:
+        """获取默认的请求headers"""
+        return {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Cache-Control': 'max-age=0',
+            'Sec-Ch-Ua': '"Not)A;Brand";v="8", "Chromium";v="138", "Microsoft Edge";v="138"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'cross-site',
+            'Referer': 'https://www.pinterest.com/',
+        }
+
+    def _extract_all_image_urls(self, pin: Dict) -> Dict[str, str]:
+        """从Pin数据中提取所有可用的图片URL"""
+        urls = {}
+
+        # 1. 从largest_image_url提取
+        if pin.get('largest_image_url'):
+            urls['largest'] = pin['largest_image_url']
+
+        # 2. 从image_urls字段提取（JSON格式）
+        if pin.get('image_urls'):
+            try:
+                if isinstance(pin['image_urls'], str):
+                    image_urls_data = json.loads(pin['image_urls'])
+                else:
+                    image_urls_data = pin['image_urls']
+
+                if isinstance(image_urls_data, dict):
+                    urls.update(image_urls_data)
+                    logger.debug(f"从image_urls提取到 {len(image_urls_data)} 个尺寸")
+
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.debug(f"解析image_urls失败: {e}")
+
+        # 3. 从images字段提取（如果存在）
+        if pin.get('images'):
+            try:
+                if isinstance(pin['images'], str):
+                    images_data = json.loads(pin['images'])
+                else:
+                    images_data = pin['images']
+
+                # 处理不同的images数据格式
+                if isinstance(images_data, dict):
+                    urls.update(images_data)
+                elif isinstance(images_data, list) and images_data:
+                    # 如果是列表，取第一个元素
+                    if isinstance(images_data[0], dict):
+                        urls.update(images_data[0])
+
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.debug(f"解析images失败: {e}")
+
+        logger.debug(f"Pin {pin.get('id', 'unknown')} 提取到 {len(urls)} 个URL: {list(urls.keys())}")
+        return urls
+
+    def _parse_pinterest_url_size(self, url: str) -> Tuple[int, int, str]:
+        """解析Pinterest URL中的尺寸信息
+
+        Args:
+            url: Pinterest图片URL
+
+        Returns:
+            (width, height, type) - 宽度、高度、类型
+        """
+        if not url:
+            return (0, 0, 'unknown')
+
+        # 原图优先级最高
+        if '/originals/' in url:
+            return (999999, 999999, 'original')
+
+        # 解析 /WIDTHx/ 或 /WIDTHxHEIGHT/ 格式
+        pattern = r'/(\d+)x(\d*)?/'
+        match = re.search(pattern, url)
+
+        if match:
+            width = int(match.group(1))
+            height_str = match.group(2)
+            height = int(height_str) if height_str else 0
+            return (width, height, 'sized')
+
+        # 无法解析
+        return (0, 0, 'unknown')
+
+    def _calculate_url_priority(self, url: str) -> int:
+        """计算URL的优先级分数"""
+        width, height, url_type = self._parse_pinterest_url_size(url)
+
+        # 原图最高优先级
+        if url_type == 'original':
+            return 1000000
+
+        # 对于有具体尺寸的，计算像素总数
+        if url_type == 'sized' and height > 0:
+            return width * height
+
+        # 对于只有宽度的，假设高度为宽度的1.5倍
+        if url_type == 'sized':
+            estimated_height = int(width * 1.5)
+            return width * estimated_height
+
+        # 无法解析的最低优先级
+        return 0
+
+    def _get_prioritized_urls(self, pin: Dict) -> List[str]:
+        """获取按优先级排序的URL列表
+
+        Args:
+            pin: Pin数据
+
+        Returns:
+            按优先级排序的URL列表（从大到小）
+        """
+        # 提取所有可用URL
+        all_urls = self._extract_all_image_urls(pin)
+
+        if not all_urls:
+            logger.warning(f"Pin {pin.get('id')} 没有找到任何图片URL")
+            return []
+
+        # 按URL优先级排序
+        url_with_priority = []
+        for key, url in all_urls.items():
+            priority = self._calculate_url_priority(url)
+            url_with_priority.append((key, url, priority))
+
+            width, height, url_type = self._parse_pinterest_url_size(url)
+            logger.debug(f"URL分析: {key} -> {width}x{height} ({url_type}) 优先级: {priority}")
+
+        # 按优先级降序排序
+        url_with_priority.sort(key=lambda x: x[2], reverse=True)
+
+        # 提取URL并去重
+        prioritized_urls = []
+        seen_urls = set()
+
+        for key, url, priority in url_with_priority:
+            if url not in seen_urls:
+                prioritized_urls.append(url)
+                seen_urls.add(url)
+                logger.debug(f"添加URL: {key} (优先级: {priority}) -> {url[:100]}...")
+
+        logger.info(f"Pin {pin.get('id')} 生成 {len(prioritized_urls)} 个候选URL")
+        return prioritized_urls
     
     def discover_keyword_databases(self, target_keyword: Optional[str] = None) -> List[Dict]:
         """发现关键词数据库
@@ -121,15 +348,19 @@ class ImageDownloader:
             return []
         
         missing_tasks = []
-        
+
         for pin in pins:
             pin_id = pin.get('id')
-            image_url = pin.get('largest_image_url')
 
-            logger.debug(f"处理Pin: {pin_id}, URL: {image_url}")
+            if not pin_id:
+                logger.debug(f"跳过Pin: 缺少ID")
+                continue
 
-            if not pin_id or not image_url:
-                logger.debug(f"跳过Pin {pin_id}: 缺少ID或URL")
+            # 使用新的智能URL提取
+            prioritized_urls = self._get_prioritized_urls(pin)
+
+            if not prioritized_urls:
+                logger.debug(f"跳过Pin {pin_id}: 没有可用的图片URL")
                 continue
 
             # 生成预期的文件路径
@@ -142,11 +373,12 @@ class ImageDownloader:
             if not file_exists:
                 missing_tasks.append({
                     'pin_id': pin_id,
-                    'image_url': image_url,
+                    'candidate_urls': prioritized_urls,  # 多个候选URL
                     'expected_path': expected_path,
-                    'keyword': keyword
+                    'keyword': keyword,
+                    'pin_data': pin  # 保留完整数据用于调试
                 })
-                logger.debug(f"添加缺失图片任务: {pin_id}")
+                logger.debug(f"添加缺失图片任务: {pin_id} ({len(prioritized_urls)} 个候选URL)")
             else:
                 logger.debug(f"跳过已存在图片: {pin_id}")
         
@@ -182,22 +414,280 @@ class ImageDownloader:
     
     def _is_valid_image_file(self, file_path: str) -> bool:
         """检查图片文件是否存在且有效
-        
+
         Args:
             file_path: 图片文件路径
-            
+
         Returns:
             文件是否有效
         """
         if not os.path.exists(file_path):
             return False
-        
+
         try:
             file_size = os.path.getsize(file_path)
-            # 文件大小至少1KB
-            return file_size >= 1024
-        except OSError:
+            # 文件大小至少10KB（避免下载到错误页面）
+            if file_size < 10240:
+                logger.debug(f"文件太小: {file_size} bytes")
+                return False
+
+            # 检查文件头验证是否为有效图片
+            with open(file_path, 'rb') as f:
+                header = f.read(16)
+
+            # 检查常见图片格式的文件头
+            if header.startswith(b'\xFF\xD8\xFF'):  # JPEG
+                return True
+            elif header.startswith(b'\x89PNG\r\n\x1a\n'):  # PNG
+                return True
+            elif header.startswith(b'GIF8'):  # GIF
+                return True
+            elif header.startswith(b'RIFF') and b'WEBP' in header:  # WEBP
+                return True
+            else:
+                logger.debug(f"未知文件格式: {header[:8].hex()}")
+                return False
+
+        except OSError as e:
+            logger.debug(f"文件检查异常: {e}")
             return False
+
+    def _download_image_with_fallback(self, task: Dict) -> Tuple[bool, str]:
+        """使用回退机制下载图片 - 集成真实浏览器会话"""
+        pin_id = task['pin_id']
+        candidate_urls = task['candidate_urls']
+        output_path = task['expected_path']
+
+        # 确保目录存在
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        # 获取真实浏览器会话headers
+        headers = self._get_session_headers()
+
+        # 逐个尝试URL
+        for i, url in enumerate(candidate_urls):
+            try:
+                logger.debug(f"尝试下载 {pin_id} URL {i+1}/{len(candidate_urls)}: {url[:100]}...")
+
+                # 使用真实浏览器会话进行下载（带重试机制）
+                success = self._download_with_session(url, output_path, headers, max_retries=3)
+
+                if success and self._is_valid_image_file(output_path):
+                    logger.debug(f"下载成功: {pin_id}")
+                    return True, "下载成功"
+                else:
+                    logger.debug(f"URL {i+1} 下载失败或文件无效")
+                    # 删除无效文件
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+
+            except Exception as e:
+                logger.debug(f"URL {i+1} 下载异常: {e}")
+                # 删除可能的损坏文件
+                if os.path.exists(output_path):
+                    try:
+                        os.remove(output_path)
+                    except:
+                        pass
+                continue
+
+        return False, f"所有URL都下载失败 ({len(candidate_urls)} 个尝试)"
+
+    def _download_with_session(self, url: str, output_path: str, headers: Dict[str, str], max_retries: int = 3) -> bool:
+        """使用真实浏览器会话下载图片 - 带重试机制"""
+        import time
+        import random
+
+        for attempt in range(max_retries):
+            try:
+                # 重试延迟（第一次不延迟）
+                if attempt > 0:
+                    delay = random.uniform(0.5, 2.0) * attempt
+                    time.sleep(delay)
+                    logger.debug(f"重试下载 {url[:100]}... (尝试 {attempt + 1}/{max_retries})")
+
+                # 获取下载会话
+                session = self._get_download_session(headers)
+
+                # 执行下载
+                response = session.get(url, timeout=30, stream=True)
+
+                if response.status_code == 200:
+                    # 检查内容类型，避免下载错误页面
+                    content_type = response.headers.get('Content-Type', '').lower()
+                    if 'text/html' in content_type and 'image' not in content_type:
+                        logger.warning(f"Pinterest返回了错误页面而不是图片 (尝试 {attempt + 1}/{max_retries})")
+                        if attempt == max_retries - 1:
+                            return False
+                        continue
+
+                    # 写入文件
+                    with open(output_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+
+                    # 验证下载的文件
+                    if self._validate_downloaded_file(output_path):
+                        logger.debug(f"下载成功: {output_path}")
+                        return True
+                    else:
+                        logger.debug(f"下载的文件验证失败 (尝试 {attempt + 1}/{max_retries})")
+                        if attempt < max_retries - 1:
+                            continue
+
+                elif response.status_code == 403:
+                    logger.warning(f"403 Forbidden - 可能触发反爬虫 (尝试 {attempt + 1}/{max_retries})")
+                    # 403错误需要更长延迟和重新获取headers
+                    if attempt < max_retries - 1:
+                        time.sleep(random.uniform(2.0, 5.0))
+                        # 重新获取headers
+                        headers = self._get_session_headers()
+                        continue
+                elif response.status_code == 404:
+                    logger.debug(f"图片URL不存在 (404) - 跳过重试")
+                    return False  # 404不需要重试
+                else:
+                    logger.debug(f"HTTP错误: {response.status_code} (尝试 {attempt + 1}/{max_retries})")
+
+            except requests.exceptions.Timeout:
+                logger.warning(f"下载超时 (尝试 {attempt + 1}/{max_retries})")
+            except requests.exceptions.ConnectionError:
+                logger.warning(f"连接错误 (尝试 {attempt + 1}/{max_retries})")
+            except requests.exceptions.HTTPError as e:
+                logger.warning(f"HTTP错误: {e} (尝试 {attempt + 1}/{max_retries})")
+            except Exception as e:
+                logger.warning(f"下载异常: {e} (尝试 {attempt + 1}/{max_retries})")
+
+        # 所有重试都失败
+        logger.debug(f"下载失败，已重试 {max_retries} 次")
+        return False
+
+    def _get_download_session(self, headers: Dict[str, str]):
+        """获取下载会话"""
+        # 优先使用真实浏览器会话配置
+        if self.browser_session:
+            try:
+                session_config = self.browser_session.get_requests_session_config()
+                session = session_config['session']
+                logger.debug("使用真实浏览器会话进行下载")
+                return session
+            except Exception as session_error:
+                logger.warning(f"获取浏览器会话配置失败: {session_error}")
+
+        # 回退到默认配置
+        import requests
+        session = requests.Session()
+        session.headers.update(headers)
+        logger.debug("使用默认配置进行下载")
+        return session
+
+    def _validate_downloaded_file(self, file_path: str) -> bool:
+        """验证下载的文件是否有效 - 使用现有的验证逻辑"""
+        is_valid = self._is_valid_image_file(file_path)
+        if not is_valid:
+            # 删除无效文件
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except OSError:
+                pass
+        return is_valid
+
+    def _analyze_download_results(self, results: List[Tuple[bool, str]], keyword: str) -> Dict:
+        """分析下载结果并提供详细统计"""
+        total = len(results)
+        success = sum(1 for success, _ in results if success)
+        failed = total - success
+
+        # 分析失败原因
+        failure_reasons = defaultdict(int)
+        for success, message in results:
+            if not success:
+                message_lower = message.lower()
+                if "超时" in message_lower or "timeout" in message_lower:
+                    failure_reasons["网络超时"] += 1
+                elif "403" in message_lower or "forbidden" in message_lower:
+                    failure_reasons["反爬虫拦截"] += 1
+                elif "404" in message_lower:
+                    failure_reasons["URL不存在"] += 1
+                elif "文件太小" in message_lower or "invalid" in message_lower:
+                    failure_reasons["无效文件"] += 1
+                elif "连接" in message_lower or "connection" in message_lower:
+                    failure_reasons["连接错误"] += 1
+                else:
+                    failure_reasons["其他错误"] += 1
+
+        success_rate = success / total * 100 if total > 0 else 0
+
+        # 记录详细统计
+        logger.info(f"关键词 {keyword} 下载统计:")
+        logger.info(f"  总数: {total}, 成功: {success}, 失败: {failed}")
+        logger.info(f"  成功率: {success_rate:.1f}%")
+
+        if failure_reasons:
+            logger.info(f"  失败原因分布:")
+            for reason, count in failure_reasons.items():
+                percentage = count / failed * 100
+                logger.info(f"    {reason}: {count} 个 ({percentage:.1f}%)")
+
+        return {
+            'total': total,
+            'success': success,
+            'failed': failed,
+            'success_rate': success_rate,
+            'failure_reasons': dict(failure_reasons)
+        }
+
+    async def _download_images_concurrently(self, missing_tasks: List[Dict], keyword: str) -> List[Tuple[bool, str]]:
+        """异步并发下载图片"""
+        semaphore = asyncio.Semaphore(self.max_concurrent)
+
+        async def download_with_semaphore(task):
+            async with semaphore:
+                # 在线程池中执行同步下载
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(
+                    None,
+                    self._download_image_with_fallback,
+                    task
+                )
+
+        # 创建并发任务
+        tasks = [download_with_semaphore(task) for task in missing_tasks]
+
+        # 使用tqdm显示进度
+        results = []
+        with tqdm(total=len(tasks), desc=f"下载 {keyword}", unit="img") as pbar:
+            for coro in asyncio.as_completed(tasks):
+                result = await coro
+                results.append(result)
+
+                # 更新进度条
+                success, message = result
+                if success:
+                    logger.debug(f"下载成功: {message}")
+                else:
+                    logger.debug(f"下载失败: {message}")
+
+                pbar.update(1)
+
+        return results
+
+    async def close(self):
+        """清理资源 - 改进版本"""
+        if self.browser_session:
+            try:
+                # 确保浏览器正确关闭
+                await self.browser_session.close()
+                logger.debug("浏览器会话已关闭")
+            except Exception as e:
+                logger.warning(f"关闭浏览器会话失败: {e}")
+            finally:
+                self.browser_session = None
+
+            # 额外等待确保进程完全关闭
+            await asyncio.sleep(0.5)
     
     async def download_missing_images_for_keyword(self, keyword: str) -> Dict:
         """下载单个关键词的缺失图片
@@ -222,31 +712,22 @@ class ImageDownloader:
             logger.info(f"关键词 {keyword}: 没有缺失的图片")
             return {'downloaded': 0, 'failed': 0, 'skipped': 0}
 
-        logger.info(f"关键词 {keyword}: 发现 {len(missing_tasks)} 个缺失图片，开始下载...")
+        logger.info(f"关键词 {keyword}: 发现 {len(missing_tasks)} 个缺失图片，开始真实下载...")
 
-        # 模拟下载（因为测试环境中URL是假的）
+        # 确保浏览器会话可用
+        await self._ensure_browser_session()
+
+        # 异步并发下载
         downloaded_count = 0
         failed_count = 0
 
-        with tqdm(total=len(missing_tasks), desc=f"下载 {keyword}", unit="img") as pbar:
-            for task in missing_tasks:
-                try:
-                    # 模拟下载：创建测试图片文件
-                    output_path = task['expected_path']
-                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        # 使用异步并发下载
+        results = await self._download_images_concurrently(missing_tasks, keyword)
 
-                    # 创建模拟图片文件
-                    with open(output_path, 'wb') as f:
-                        f.write(b'DOWNLOADED_IMAGE_DATA' * 100)  # 2000 bytes
-
-                    downloaded_count += 1
-                    logger.debug(f"模拟下载成功: {task['pin_id']}")
-
-                except Exception as e:
-                    failed_count += 1
-                    logger.error(f"模拟下载失败: {task['pin_id']}, 错误: {e}")
-
-                pbar.update(1)
+        # 分析下载结果
+        stats = self._analyze_download_results(results, keyword)
+        downloaded_count = stats['success']
+        failed_count = stats['failed']
 
         return {
             'downloaded': downloaded_count,

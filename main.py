@@ -41,10 +41,11 @@ def create_parser() -> argparse.ArgumentParser:
 使用示例:
   python main.py --query "nature photography" --count 100
   python main.py --url "https://www.pinterest.com/pinterest/" --count 50
-  python main.py --query "landscape" --count 2000
+  python main.py --query "landscape" --count 2000 --max-concurrent 30
   python main.py --query "cats" --count 100 --no-images  # 仅采集数据，不下载图片
   python main.py --only-images --query "cats"  # 仅下载cats关键词的缺失图片
-  python main.py --only-images  # 下载所有关键词的缺失图片
+  python main.py --only-images --max-concurrent 25  # 下载所有关键词，高并发
+  python main.py --only-images -j 5  # 下载所有关键词，低并发（网络慢时）
         """
     )
 
@@ -97,8 +98,25 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="启用详细输出（开发模式）"
     )
+    parser.add_argument(
+        "--max-concurrent", "--max-workers", "-j",
+        type=int,
+        default=15,
+        help="最大并发下载数 (默认: 15，范围: 1-50)"
+    )
 
     return parser
+
+
+def validate_concurrent_value(value: int) -> int:
+    """验证并发数值的有效性"""
+    if value < 1:
+        logger.warning(f"并发数过小 ({value})，设置为1")
+        return 1
+    elif value > 50:
+        logger.warning(f"并发数过大 ({value})，设置为50")
+        return 50
+    return value
 
 
 def setup_logger(debug: bool = False, verbose: bool = False):
@@ -147,13 +165,16 @@ async def async_main():
     # 设置日志
     setup_logger(args.debug, args.verbose)
 
+    # 验证并发参数
+    max_concurrent = validate_concurrent_value(args.max_concurrent)
+
     # --only-images 模式：仅下载图片
     if args.only_images:
         from src.tools.image_downloader import ImageDownloader
 
         downloader = ImageDownloader(
             output_dir=args.output,
-            max_concurrent=15,
+            max_concurrent=max_concurrent,
             proxy=args.proxy,
             prefer_requests=True
         )
@@ -178,6 +199,12 @@ async def async_main():
                 import traceback
                 logger.error(traceback.format_exc())
             return 1
+        finally:
+            # 清理资源
+            try:
+                await downloader.close()
+            except Exception as e:
+                logger.warning(f"清理下载器资源失败: {e}")
 
     # 普通模式：数据采集
     scraper = None
@@ -187,7 +214,8 @@ async def async_main():
             output_dir=args.output,
             download_images=not args.no_images,
             proxy=args.proxy,
-            debug=args.debug
+            debug=args.debug,
+            max_concurrent=max_concurrent
         )
 
         # 执行智能采集
