@@ -189,9 +189,9 @@ class SmartScraper:
                 logger.warning("hybrid策略未获取到数据")
                 continue
 
-            # 数据已在scroll_and_collect中实时保存，这里只需要统计
+            # 🔥 修复：数据已通过两阶段实时保存机制保存到数据库
             new_unique_count = len(new_pins)
-            logger.info(f"本轮采集Pin: {new_unique_count} (已实时保存到数据库)")
+            logger.info(f"本轮采集Pin: {new_unique_count} (第一阶段+第二阶段均已实时保存到数据库)")
 
             # 检查去重率，如果过高则停止
             if round_num > 0 and new_unique_count == 0:
@@ -407,7 +407,7 @@ class SmartScraper:
                     no_new_data_streak = 0
                     pins_before = len(all_pins)
 
-                    # 去重添加新Pin
+                    # 去重添加新Pin并实时保存到数据库
                     for related_pin in related_pins:
                         if len(all_pins) >= target_count:
                             break
@@ -416,6 +416,18 @@ class SmartScraper:
                         if related_id and related_id not in self.seen_pin_ids:
                             self.seen_pin_ids.add(related_id)
                             all_pins.append(related_pin)
+
+                            # 🔥 修复：第二阶段实时保存到数据库
+                            if self.repository and query:
+                                try:
+                                    success = self.repository.save_pin_immediately(related_pin, query, self.session_id)
+                                    if success:
+                                        logger.debug(f"💾 第二阶段实时保存Pin: {related_id}")
+                                        self.stats["pins_saved_realtime"] += 1
+                                    else:
+                                        logger.warning(f"⚠️  第二阶段保存失败: {related_id}")
+                                except Exception as e:
+                                    logger.error(f"❌ 第二阶段保存异常: {related_id}, 错误: {e}")
 
                             # 将新Pin加入队列用于进一步扩展
                             if related_id not in visited_pins:
@@ -504,6 +516,11 @@ class SmartScraper:
                 while (len(interceptor.extracted_pins) < max_count and
                        consecutive_no_new < max_consecutive and
                        scroll_count < max_scrolls):
+
+                    # 🔥 修复：添加中断检查
+                    if self._interrupt_requested:
+                        logger.info(f"检测到中断请求，停止Pin详情页采集: {pin_id}")
+                        break
 
                     pins_before = len(interceptor.extracted_pins)
 
