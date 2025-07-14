@@ -1,7 +1,7 @@
 [project]
 name = "pinterest-scraper"
-version = "3.4.0"
-description = "Pinterest数据采集工具，支持关键词搜索、Pin详情页扩展策略和实时进度可视化"
+version = "4.1.0"
+description = "Pinterest数据采集工具，支持关键词搜索、Pin详情页扩展策略、实时进度可视化、仅下载图片功能和数据库合并工具"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [

@@ -831,7 +831,7 @@ wheels = [
 
 [[package]]
 name = "pinterest-scraper"
-version = "3.4.0"
+version = "4.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },

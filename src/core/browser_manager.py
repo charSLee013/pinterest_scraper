@@ -160,6 +160,8 @@ class BrowserManager:
     async def stop(self):
         """关闭浏览器"""
         try:
+            logger.debug("开始关闭浏览器...")
+
             # 注销事件处理器
             if self.page and self._registered_handlers:
                 for event_type, handler in self._registered_handlers:
@@ -169,18 +171,47 @@ class BrowserManager:
                         logger.debug(f"注销{event_type}处理器失败: {e}")
                 self._registered_handlers.clear()
 
+            # 按顺序关闭资源
             if self.page:
-                await self.browser_context.close()
-                await self.browser.close()
-                await self.playwright_instance.stop()
-                logger.debug("浏览器已关闭")
+                try:
+                    await self.page.close()
+                    logger.debug("页面已关闭")
+                except Exception as e:
+                    logger.debug(f"关闭页面失败: {e}")
+
+            if self.browser_context:
+                try:
+                    await self.browser_context.close()
+                    logger.debug("浏览器上下文已关闭")
+                except Exception as e:
+                    logger.debug(f"关闭浏览器上下文失败: {e}")
+
+            if self.browser:
+                try:
+                    await self.browser.close()
+                    logger.debug("浏览器已关闭")
+                except Exception as e:
+                    logger.debug(f"关闭浏览器失败: {e}")
+
+            if self.playwright_instance:
+                try:
+                    await self.playwright_instance.stop()
+                    logger.debug("Playwright实例已停止")
+                except Exception as e:
+                    logger.debug(f"停止Playwright实例失败: {e}")
+
+            logger.debug("浏览器资源清理完成")
+
         except Exception as e:
             logger.error(f"关闭浏览器出错: {e}")
         finally:
+            # 确保所有引用都被清理
             self.page = None
             self.browser_context = None
             self.browser = None
             self.playwright_instance = None
+            self.request_handlers.clear()
+            self.response_handlers.clear()
 
     async def navigate(self, url: str) -> bool:
         """导航到指定URL - 默认优化版本，集成重试和延迟

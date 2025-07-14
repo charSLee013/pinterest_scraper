@@ -681,3 +681,14 @@ class SmartScraper:
     def get_saved_count(self) -> int:
         """获取已保存的Pin数量"""
         return self._saved_count
+
+    async def close(self):
+        """关闭智能采集器，清理浏览器资源"""
+        try:
+            logger.debug("正在清理智能采集器资源...")
+            # SmartScraper本身不持有长期的浏览器实例
+            # 浏览器实例在每个方法中创建和销毁
+            # 这里主要是为了接口一致性
+            logger.debug("智能采集器资源清理完成")
+        except Exception as e:
+            logger.error(f"清理智能采集器资源时出错: {e}")

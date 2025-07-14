@@ -425,15 +425,43 @@ class PinterestScraper:
     async def close(self):
         """关闭爬虫，清理资源"""
         try:
+            logger.debug("开始清理Pinterest爬虫资源...")
+
             # 停止下载管理器
-            await self.download_manager.stop()
+            if hasattr(self, 'download_manager') and self.download_manager:
+                try:
+                    await self.download_manager.stop()
+                    logger.debug("下载管理器已停止")
+                except Exception as e:
+                    logger.warning(f"停止下载管理器时出错: {e}")
+
+            # 关闭智能采集器中的浏览器资源
+            if hasattr(self, 'scraper') and self.scraper:
+                try:
+                    await self.scraper.close()
+                    logger.debug("智能采集器已关闭")
+                except Exception as e:
+                    logger.warning(f"关闭智能采集器时出错: {e}")
+
+            # 释放进程锁
+            if hasattr(self, 'process_manager') and self.process_manager:
+                try:
+                    self.process_manager.release_lock()
+                    logger.debug("进程锁已释放")
+                except Exception as e:
+                    logger.warning(f"释放进程锁时出错: {e}")
 
             # 关闭数据库连接
-            if hasattr(self, 'db_manager') and hasattr(self.db_manager, 'engine'):
-                self.db_manager.engine.dispose()
-                logger.debug("数据库连接已关闭")
+            if hasattr(self, 'repository') and self.repository:
+                try:
+                    # 如果repository有close方法，调用它
+                    if hasattr(self.repository, 'close'):
+                        await self.repository.close()
+                    logger.debug("数据库连接已关闭")
+                except Exception as e:
+                    logger.warning(f"关闭数据库连接时出错: {e}")
 
-            logger.info("Pinterest爬虫已关闭")
+            logger.debug("Pinterest爬虫资源清理完成")
         except Exception as e:
             logger.error(f"关闭爬虫时发生错误: {e}")
 
