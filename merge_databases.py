@@ -45,9 +45,13 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  python merge_databases.py --source output1 --target output2
-  python merge_databases.py --source backup_output --target current_output --verbose
-  python merge_databases.py --source old_data --target new_data --debug
+  python merge_databases.py --source main_output --target backup_output
+  python merge_databases.py --source current_output --target additional_data --verbose
+  python merge_databases.py --source primary_data --target secondary_data --debug
+
+注意:
+  --source 是主数据库目录（合并后的最终位置）
+  --target 是要合并进来的数据库目录（数据来源）
         """
     )
     
@@ -55,12 +59,12 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--source",
         required=True,
-        help="源output目录路径"
+        help="主数据库目录路径（合并后的最终位置）"
     )
     parser.add_argument(
-        "--target", 
+        "--target",
         required=True,
-        help="目标output目录路径"
+        help="要合并的数据库目录路径（数据来源）"
     )
     
     # 可选参数
@@ -88,17 +92,17 @@ class DatabaseMerger:
     
     def __init__(self, source_dir: str, target_dir: str, dry_run: bool = False):
         """初始化合并器
-        
+
         Args:
-            source_dir: 源目录
-            target_dir: 目标目录
+            source_dir: 主数据库目录（合并后的最终位置）
+            target_dir: 要合并的数据库目录（数据来源）
             dry_run: 是否为预览模式
         """
-        self.source_dir = Path(source_dir)
-        self.target_dir = Path(target_dir)
+        self.source_dir = Path(source_dir)  # 主数据库目录
+        self.target_dir = Path(target_dir)  # 要合并的数据库目录
         self.dry_run = dry_run
-        
-        logger.debug(f"数据库合并器初始化: {source_dir} -> {target_dir}")
+
+        logger.debug(f"数据库合并器初始化: 将 {target_dir} 合并到 {source_dir}")
     
     def discover_database_pairs(self) -> List[Dict]:
         """发现需要合并的数据库对
@@ -106,49 +110,49 @@ class DatabaseMerger:
         Returns:
             数据库对列表
         """
-        if not self.source_dir.exists():
-            logger.error(f"源目录不存在: {self.source_dir}")
+        if not self.target_dir.exists():
+            logger.error(f"要合并的数据库目录不存在: {self.target_dir}")
             return []
-        
-        # 发现源数据库
+
+        # 发现主数据库（source）
         source_dbs = self._discover_databases(self.source_dir)
-        logger.info(f"发现源数据库: {len(source_dbs)} 个")
-        
-        # 发现目标数据库
+        logger.info(f"发现主数据库: {len(source_dbs)} 个")
+
+        # 发现要合并的数据库（target）
         target_dbs = self._discover_databases(self.target_dir)
-        logger.info(f"发现目标数据库: {len(target_dbs)} 个")
-        
-        # 创建目标数据库的关键词映射
-        target_map = {db['keyword']: db for db in target_dbs}
-        
+        logger.info(f"发现要合并的数据库: {len(target_dbs)} 个")
+
+        # 创建主数据库的关键词映射
+        source_map = {db['keyword']: db for db in source_dbs}
+
         merge_pairs = []
-        for source_db in source_dbs:
-            keyword = source_db['keyword']
-            
-            if keyword in target_map:
-                # 存在对应的目标数据库
+        for target_db in target_dbs:
+            keyword = target_db['keyword']
+
+            if keyword in source_map:
+                # 主数据库中存在对应关键词
                 merge_pairs.append({
                     'keyword': keyword,
-                    'source': source_db,
-                    'target': target_map[keyword],
+                    'source': source_map[keyword],  # 主数据库（目标位置）
+                    'target': target_db,            # 要合并的数据库（数据来源）
                     'operation': 'merge'
                 })
-                logger.debug(f"合并对: {keyword} (已存在)")
+                logger.debug(f"合并对: {keyword} (合并到现有)")
             else:
-                # 目标中不存在，需要创建
-                target_path = self.target_dir / keyword
+                # 主数据库中不存在，需要在主数据库中创建
+                source_path = self.source_dir / keyword
                 merge_pairs.append({
                     'keyword': keyword,
-                    'source': source_db,
-                    'target': {
+                    'source': {
                         'keyword': keyword,
-                        'db_path': str(target_path / 'pinterest.db'),
-                        'images_dir': str(target_path / 'images'),
-                        'keyword_dir': str(target_path)
+                        'db_path': str(source_path / 'pinterest.db'),
+                        'images_dir': str(source_path / 'images'),
+                        'keyword_dir': str(source_path)
                     },
+                    'target': target_db,            # 要合并的数据库（数据来源）
                     'operation': 'create_and_merge'
                 })
-                logger.debug(f"合并对: {keyword} (新建)")
+                logger.debug(f"合并对: {keyword} (新建到主数据库)")
         
         return merge_pairs
     
@@ -213,25 +217,27 @@ class DatabaseMerger:
         for pair in merge_pairs:
             keyword = pair['keyword']
             operation = pair['operation']
-            source_db = pair['source']
-            target_db = pair['target']
-            
-            # 获取Pin数量
-            source_count = self._get_pin_count(source_db['db_path'])
-            total_source_pins += source_count
-            
+            source_db = pair['source']  # 主数据库（目标位置）
+            target_db = pair['target']  # 要合并的数据库（数据来源）
+
+            # 获取要合并的数据库的Pin数量
+            target_count = self._get_pin_count(target_db['db_path'])
+            total_target_pins += target_count
+
             if operation == 'merge':
-                target_count = self._get_pin_count(target_db['db_path'])
-                total_target_pins += target_count
-                print(f"{keyword}: {source_count} pins -> {target_count} pins (合并)")
+                # 主数据库中已存在该关键词
+                source_count = self._get_pin_count(source_db['db_path'])
+                total_source_pins += source_count
+                print(f"{keyword}: {target_count} pins -> {source_count} pins (合并到现有)")
             else:
-                print(f"{keyword}: {source_count} pins (新建)")
+                # 主数据库中不存在，将新建
+                print(f"{keyword}: {target_count} pins (新建到主数据库)")
         
         print("="*60)
         print(f"总计: {len(merge_pairs)} 个关键词")
-        print(f"源数据: {total_source_pins} pins")
-        print(f"目标数据: {total_target_pins} pins")
-        print("注意: 目标数据库中的数据将优先保留")
+        print(f"主数据库: {total_source_pins} pins")
+        print(f"要合并的数据: {total_target_pins} pins")
+        print("注意: 主数据库中的数据将优先保留（相同Pin ID时）")
         print("="*60)
         
         if self.dry_run:
@@ -316,18 +322,20 @@ class DatabaseMerger:
             合并统计结果
         """
         keyword = merge_info['keyword']
-        source_db = merge_info['source']
-        target_db = merge_info['target']
+        source_db = merge_info['source']  # 主数据库（目标位置）
+        target_db = merge_info['target']  # 要合并的数据库（数据来源）
         operation = merge_info['operation']
 
-        # 创建目标目录（如果不存在）
-        target_dir = Path(target_db['keyword_dir'])
-        target_dir.mkdir(parents=True, exist_ok=True)
+        # 创建主数据库目录（如果不存在）
+        source_dir = Path(source_db['keyword_dir'])
+        source_dir.mkdir(parents=True, exist_ok=True)
 
-        images_dir = Path(target_db['images_dir'])
+        images_dir = Path(source_db['images_dir'])
         images_dir.mkdir(parents=True, exist_ok=True)
 
         # 初始化repository
+        # source_repo: 主数据库（接收数据）
+        # target_repo: 要合并的数据库（提供数据）
         source_repo = SQLiteRepository(keyword=keyword, output_dir=str(self.source_dir))
         target_repo = SQLiteRepository(keyword=keyword, output_dir=str(self.target_dir))
 
@@ -341,26 +349,26 @@ class DatabaseMerger:
         }
 
         try:
-            # 批量读取源数据
-            source_pins = source_repo.load_pins_by_query(keyword)
-            logger.debug(f"从源数据库加载 {len(source_pins)} 个Pin: {keyword}")
+            # 批量读取要合并的数据库中的数据
+            target_pins = target_repo.load_pins_by_query(keyword)
+            logger.debug(f"从要合并的数据库加载 {len(target_pins)} 个Pin: {keyword}")
 
-            if not source_pins:
-                logger.info(f"源数据库为空: {keyword}")
+            if not target_pins:
+                logger.info(f"要合并的数据库为空: {keyword}")
                 return merge_stats
 
-            # 获取目标数据库中已存在的Pin ID集合
+            # 获取主数据库中已存在的Pin ID集合
             existing_pin_ids = set()
             try:
-                target_pins = target_repo.load_pins_by_query(keyword)
-                existing_pin_ids = {pin.get('id') for pin in target_pins if pin.get('id')}
-                logger.debug(f"目标数据库已有 {len(existing_pin_ids)} 个Pin: {keyword}")
+                source_pins = source_repo.load_pins_by_query(keyword)
+                existing_pin_ids = {pin.get('id') for pin in source_pins if pin.get('id')}
+                logger.debug(f"主数据库已有 {len(existing_pin_ids)} 个Pin: {keyword}")
             except Exception as e:
-                logger.debug(f"目标数据库为空或不存在: {keyword}, {e}")
+                logger.debug(f"主数据库为空或不存在: {keyword}, {e}")
 
-            # 过滤需要合并的Pin（目标数据库优先策略）
+            # 过滤需要合并的Pin（主数据库优先策略）
             pins_to_merge = []
-            for pin in source_pins:
+            for pin in target_pins:
                 pin_id = pin.get('id')
                 if not pin_id:
                     continue
@@ -374,9 +382,9 @@ class DatabaseMerger:
                     pins_to_merge.append(pin)
                     merge_stats['pins_merged'] += 1
 
-            # 批量保存新Pin
+            # 批量保存新Pin到主数据库
             if pins_to_merge:
-                logger.info(f"开始合并 {len(pins_to_merge)} 个新Pin: {keyword}")
+                logger.info(f"开始合并 {len(pins_to_merge)} 个新Pin到主数据库: {keyword}")
 
                 # 使用进度条显示合并进度
                 with tqdm(total=len(pins_to_merge), desc=f"合并 {keyword}", unit="pins") as pbar:
@@ -391,8 +399,8 @@ class DatabaseMerger:
                             # 直接使用原始Pin数据，保持完整性
                             pins_to_save.append(pin)
 
-                        # 批量保存
-                        success = target_repo.save_pins_batch(pins_to_save, keyword)
+                        # 批量保存到主数据库
+                        success = source_repo.save_pins_batch(pins_to_save, keyword)
                         if not success:
                             error_msg = f"批量保存失败: {len(batch)} pins"
                             merge_stats['errors'].append(error_msg)
@@ -400,7 +408,7 @@ class DatabaseMerger:
 
                         pbar.update(len(batch))
 
-            logger.info(f"合并完成: {keyword}, 新增 {merge_stats['pins_merged']} pins")
+            logger.info(f"合并完成: {keyword}, 新增 {merge_stats['pins_merged']} pins到主数据库")
 
         except Exception as e:
             error_msg = f"合并数据库对失败: {keyword}, 错误: {e}"

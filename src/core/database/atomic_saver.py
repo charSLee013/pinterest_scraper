@@ -184,15 +184,24 @@ class AtomicPinSaver:
     
     def _save_pin_to_database(self, session, normalized_data: Dict[str, Any]) -> bool:
         """保存Pin到数据库 - 使用INSERT OR REPLACE策略
-        
+
         Args:
             session: 数据库会话
             normalized_data: 标准化后的Pin数据
-            
+
         Returns:
             是否保存成功
         """
         try:
+            # 准备数据库保存的数据，处理datetime序列化
+            db_data = normalized_data.copy()
+
+            # 将datetime对象转换为字符串
+            if isinstance(db_data.get('created_at'), datetime):
+                db_data['created_at'] = db_data['created_at'].isoformat()
+            if isinstance(db_data.get('updated_at'), datetime):
+                db_data['updated_at'] = db_data['updated_at'].isoformat()
+
             # 使用INSERT OR REPLACE避免UPSERT复杂性
             sql = text("""
                 INSERT OR REPLACE INTO pins (
@@ -207,8 +216,8 @@ class AtomicPinSaver:
                     :created_at, :updated_at
                 )
             """)
-            
-            session.execute(sql, normalized_data)
+
+            session.execute(sql, db_data)
             return True
             
         except SQLAlchemyError as e:
@@ -233,12 +242,21 @@ class AtomicPinSaver:
                 )
             """)
             
+            # 准备下载任务数据，处理datetime序列化
+            created_at = normalized_data['created_at']
+            updated_at = normalized_data['updated_at']
+
+            if isinstance(created_at, datetime):
+                created_at = created_at.isoformat()
+            if isinstance(updated_at, datetime):
+                updated_at = updated_at.isoformat()
+
             task_data = {
                 'pin_id': normalized_data['id'],
                 'pin_hash': normalized_data['pin_hash'],
                 'image_url': image_url,
-                'created_at': normalized_data['created_at'],
-                'updated_at': normalized_data['updated_at']
+                'created_at': created_at,
+                'updated_at': updated_at
             }
             
             session.execute(sql, task_data)

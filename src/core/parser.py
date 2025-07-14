@@ -42,12 +42,22 @@ def extract_pin_id_from_html(html_element: str) -> str:
         if attr_match:
             return attr_match.group(1)
 
-    # 其他可能的ID模式
-    generic_id_match = re.search(
-        r'pin_id[\'"]?\s*[:=]\s*[\'"]?(\d+)[\'"]?', html_element
-    )
-    if generic_id_match:
-        return generic_id_match.group(1)
+    # 模式4: 新增更多Pinterest ID模式
+    patterns = [
+        r'pin_id[\'"]?\s*[:=]\s*[\'"]?(\d+)[\'"]?',  # 原有模式
+        r'data-test-pin-id=[\'"](\d+)[\'"]',  # 测试属性
+        r'href=[\'"][^\'\"]*\/pin\/(\d+)\/?[^\'\"]*[\'"]',  # href中的pin ID
+        r'data-pin=[\'"](\d+)[\'"]',  # data-pin属性
+        r'pin-id=[\'"](\d+)[\'"]',  # pin-id属性
+        r'entityId[\'"]?\s*[:=]\s*[\'"]?(\d+)[\'"]?',  # entityId
+        r'"id"\s*:\s*"(\d+)"',  # JSON中的id字段
+        r'"entityId"\s*:\s*"(\d+)"',  # JSON中的entityId字段
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, html_element)
+        if match:
+            return match.group(1)
 
     return ""
 
@@ -435,13 +445,21 @@ def extract_pins_from_html(html: str) -> List[Dict]:
         pin_elements = soup.select("div[role='listitem'], div[class*='Grid__Item']")
 
     # 处理所有找到的pin元素
-    for pin_element in pin_elements:
+    for i, pin_element in enumerate(pin_elements):
         try:
             pin_data = parse_pin_from_html(str(pin_element))
-            if pin_data["id"] and (
-                pin_data["image_urls"] or pin_data["largest_image_url"]
-            ):
+            pin_id = pin_data.get("id")
+            has_images = pin_data.get("image_urls") or pin_data.get("largest_image_url")
+
+            logger.debug(f"Pin {i+1}: ID='{pin_id}', 有图片={bool(has_images)}")
+
+            if pin_id and has_images:
                 pins.append(pin_data)
+                logger.debug(f"Pin {i+1} 添加成功")
+            else:
+                logger.warning(f"Pin {i+1} 被跳过: ID='{pin_id}', 图片={bool(has_images)}")
+                if not pin_id:
+                    logger.debug(f"Pin {i+1} HTML片段: {str(pin_element)[:200]}...")
         except Exception as e:
             logger.error(f"解析pin元素出错: {e}")
             continue

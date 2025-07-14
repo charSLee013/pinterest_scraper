@@ -281,6 +281,8 @@ class SmartScraper:
         for pin in pins:
             pin_id = pin.get('id')
             if not pin_id:
+                logger.warning(f"Pin缺少ID，跳过保存: {pin.get('title', 'Unknown')[:50]}")
+                logger.debug(f"无ID的Pin完整数据: {pin}")
                 continue
 
             try:
@@ -659,14 +661,16 @@ class SmartScraper:
         """处理用户中断，数据已实时保存"""
         if self.repository and query:
             try:
-                logger.info(f"中断处理完成，已实时保存 {self._saved_count} 个Pin")
+                # 从数据库获取实际保存的Pin数量
+                actual_saved_count = len(self.repository.load_pins_by_query(query))
+                logger.info(f"中断处理完成，数据库中实际保存 {actual_saved_count} 个Pin")
 
-                # 更新会话状态为中断
+                # 更新会话状态为中断，使用实际数量
                 if self.session_id:
                     self.repository.update_session_status(
-                        self.session_id, 'interrupted', self._saved_count
+                        self.session_id, 'interrupted', actual_saved_count
                     )
-                    logger.info(f"会话状态已更新为中断: {self.session_id}")
+                    logger.info(f"会话状态已更新为中断: {self.session_id}, 实际数量: {actual_saved_count}")
 
             except Exception as e:
                 logger.error(f"中断处理失败: {e}")

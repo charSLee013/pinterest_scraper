@@ -133,9 +133,26 @@ class PinDataNormalizer:
         else:
             normalized['stats'] = None
         
-        # 原始数据 - 完整保存
-        normalized['raw_data'] = json.dumps(pin_data)
+        # 原始数据 - 完整保存，处理datetime序列化
+        try:
+            normalized['raw_data'] = json.dumps(pin_data, default=cls._json_serializer)
+        except Exception as e:
+            logger.warning(f"原始数据JSON序列化失败: {e}")
+            # 如果序列化失败，保存一个简化版本
+            simplified_data = {
+                'id': pin_data.get('id'),
+                'title': pin_data.get('title'),
+                'description': pin_data.get('description')
+            }
+            normalized['raw_data'] = json.dumps(simplified_data)
     
+    @classmethod
+    def _json_serializer(cls, obj):
+        """JSON序列化器，处理datetime等特殊对象"""
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
     @classmethod
     def _calculate_pin_hash(cls, normalized_data: Dict[str, Any]) -> str:
         """计算Pin的MD5哈希值用于去重
