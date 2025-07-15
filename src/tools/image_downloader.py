@@ -13,6 +13,7 @@ import asyncio
 import json
 import re
 import requests
+import base64
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from collections import defaultdict
@@ -140,9 +141,17 @@ class ImageDownloader:
         }
 
     def _extract_all_image_urls(self, pin: Dict) -> Dict[str, str]:
-        """从Pin数据中提取所有可用的图片URL"""
+        """从Pin数据中提取所有可用的图片URL - 增强版
+
+        增强功能:
+        1. 从专用字段提取（第一阶段数据）
+        2. 从raw_data提取（第二阶段数据）
+        3. 从URL生成图片URL（第二阶段数据）
+        4. 多层级提取策略，提高鲁棒性
+        """
         urls = {}
 
+        # 策略1: 从专用字段提取（第一阶段数据）
         # 1. 从largest_image_url提取
         if pin.get('largest_image_url'):
             urls['largest'] = pin['largest_image_url']
@@ -180,6 +189,75 @@ class ImageDownloader:
 
             except (json.JSONDecodeError, TypeError) as e:
                 logger.debug(f"解析images失败: {e}")
+
+        # 策略2: 从raw_data提取（第二阶段数据）
+        # 如果前面的策略没有提取到URL，尝试从raw_data中提取
+        if not urls and pin.get('raw_data'):
+            try:
+                raw_data = pin['raw_data']
+                if isinstance(raw_data, str):
+                    raw_data = json.loads(raw_data)
+
+                # 从images字段提取
+                if 'images' in raw_data and isinstance(raw_data['images'], dict):
+                    images = raw_data['images']
+
+                    # 优先使用orig（原图）
+                    if 'orig' in images and isinstance(images['orig'], dict) and 'url' in images['orig']:
+                        urls['orig'] = images['orig']['url']
+
+                    # 添加其他尺寸
+                    for size, img_data in images.items():
+                        if isinstance(img_data, dict) and 'url' in img_data:
+                            urls[size] = img_data['url']
+
+                # 从image字段提取
+                if not urls and 'image' in raw_data:
+                    image_data = raw_data['image']
+                    if isinstance(image_data, dict) and 'url' in image_data:
+                        urls['image'] = image_data['url']
+
+                # 从image_urls字段提取
+                if not urls and 'image_urls' in raw_data and raw_data['image_urls']:
+                    if isinstance(raw_data['image_urls'], dict):
+                        urls.update(raw_data['image_urls'])
+                    elif isinstance(raw_data['image_urls'], str):
+                        try:
+                            image_urls_data = json.loads(raw_data['image_urls'])
+                            if isinstance(image_urls_data, dict):
+                                urls.update(image_urls_data)
+                        except:
+                            pass
+
+                logger.debug(f"从raw_data提取到 {len(urls)} 个URL")
+
+            except Exception as e:
+                logger.debug(f"从raw_data提取URL失败: {e}")
+
+        # 策略3: 从Pin ID生成图片URL（第二阶段数据）
+        # 如果前面的策略都没有提取到URL，尝试从Pin ID生成
+        if not urls and pin.get('id'):
+            try:
+                pin_id = pin.get('id')
+
+                # 尝试从URL中提取图片ID
+                if pin.get('url') and '/pin/' in pin.get('url', ''):
+                    # 从URL中提取Pin ID
+                    import re
+                    url_match = re.search(r'/pin/([^/]+)/', pin.get('url', ''))
+                    if url_match:
+                        pin_id = url_match.group(1)
+
+                # 如果是数字ID，可以尝试生成图片URL
+                if pin_id.isdigit() or (len(pin_id) > 8 and not '=' in pin_id):
+                    # 尝试生成常见的Pinterest图片URL格式
+                    urls['generated_orig'] = f"https://i.pinimg.com/originals/xx/xx/{pin_id}.jpg"
+                    urls['generated_736'] = f"https://i.pinimg.com/736x/xx/xx/{pin_id}.jpg"
+                    urls['generated_564'] = f"https://i.pinimg.com/564x/xx/xx/{pin_id}.jpg"
+
+                    logger.debug(f"从Pin ID生成了 {len(urls)} 个URL")
+            except Exception as e:
+                logger.debug(f"从Pin ID生成URL失败: {e}")
 
         logger.debug(f"Pin {pin.get('id', 'unknown')} 提取到 {len(urls)} 个URL: {list(urls.keys())}")
         return urls
@@ -708,6 +786,10 @@ class ImageDownloader:
 
         # 查找缺失图片
         missing_tasks = self.find_missing_images(db_info)
+        if not missing_tasks:
+            logger.info(f"关键词 {keyword}: 没有缺失的图片")
+            return {'downloaded': 0, 'failed': 0, 'skipped': 0}
+
         if not missing_tasks:
             logger.info(f"关键词 {keyword}: 没有缺失的图片")
             return {'downloaded': 0, 'failed': 0, 'skipped': 0}

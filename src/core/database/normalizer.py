@@ -9,7 +9,7 @@ import json
 import hashlib
 import uuid
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from loguru import logger
 
 
@@ -89,22 +89,107 @@ class PinDataNormalizer:
         # 标题
         title = pin_data.get('title')
         normalized['title'] = str(title) if title else None
-        
+
         # 描述
         description = pin_data.get('description')
         normalized['description'] = str(description) if description else None
-        
-        # 最大图片URL
+
+        # 图片URL处理 - 增强版
+        cls._process_image_urls(normalized, pin_data)
+
+    @classmethod
+    def _process_image_urls(cls, normalized: Dict, pin_data: Dict):
+        """处理图片URL字段 - 增强版
+
+        策略:
+        1. 优先使用已有的largest_image_url和image_urls字段
+        2. 如果没有，尝试从raw_data中提取
+        """
+        # 策略1: 使用已有字段
         largest_image_url = pin_data.get('largest_image_url')
-        normalized['largest_image_url'] = str(largest_image_url) if largest_image_url else None
-        
-        # 图片URLs - 处理为JSON字符串
         image_urls = pin_data.get('image_urls', {})
+
+        # 策略2: 如果没有图片URL，尝试从其他字段提取
+        if not largest_image_url and not image_urls:
+            extracted_largest, extracted_urls = cls._extract_image_urls_from_pin_data(pin_data)
+            if extracted_largest:
+                largest_image_url = extracted_largest
+            if extracted_urls:
+                image_urls = extracted_urls
+
+        # 设置normalized字段
+        normalized['largest_image_url'] = str(largest_image_url) if largest_image_url else None
+
+        # 图片URLs - 处理为JSON字符串
         if isinstance(image_urls, dict) and image_urls:
             normalized['image_urls'] = json.dumps(image_urls)
+        elif isinstance(image_urls, str):
+            # 如果已经是JSON字符串，直接使用
+            normalized['image_urls'] = image_urls
         else:
             normalized['image_urls'] = None
-    
+
+    @classmethod
+    def _extract_image_urls_from_pin_data(cls, pin_data: Dict) -> Tuple[Optional[str], Optional[Dict]]:
+        """从Pin数据中提取图片URL
+
+        Args:
+            pin_data: Pin数据字典
+
+        Returns:
+            (largest_image_url, image_urls_dict)
+        """
+        try:
+            # 尝试从raw_data中提取
+            raw_data = pin_data.get('raw_data')
+            if not raw_data:
+                return None, None
+
+            # 如果raw_data是字符串，解析为字典
+            if isinstance(raw_data, str):
+                try:
+                    raw_data = json.loads(raw_data)
+                except json.JSONDecodeError:
+                    return None, None
+
+            if not isinstance(raw_data, dict):
+                return None, None
+
+            largest_url = None
+            image_urls = {}
+
+            # 从images字段提取
+            if 'images' in raw_data and isinstance(raw_data['images'], dict):
+                images = raw_data['images']
+
+                # 优先使用orig（原图）
+                if 'orig' in images and isinstance(images['orig'], dict) and 'url' in images['orig']:
+                    largest_url = images['orig']['url']
+
+                # 收集所有尺寸
+                for size, img_data in images.items():
+                    if isinstance(img_data, dict) and 'url' in img_data:
+                        image_urls[size] = img_data['url']
+
+            # 如果没有找到orig，尝试其他字段
+            if not largest_url and image_urls:
+                # 使用最大尺寸作为largest_url
+                largest_size = max(image_urls.items(), key=lambda x: len(x[1]))
+                largest_url = largest_size[1]
+
+            # 如果还是没有找到，尝试image字段
+            if not largest_url and 'image' in raw_data:
+                image_data = raw_data['image']
+                if isinstance(image_data, dict) and 'url' in image_data:
+                    largest_url = image_data['url']
+                    image_urls['image'] = image_data['url']
+
+            return largest_url, image_urls if image_urls else None
+
+        except Exception as e:
+            logger.debug(f"从Pin数据提取图片URL失败: {e}")
+            return None, None
+
     @classmethod
     def _process_extended_optional_fields(cls, normalized: Dict, pin_data: Dict):
         """处理扩展可选字段 - 采用宽松策略"""

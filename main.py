@@ -168,43 +168,68 @@ async def async_main():
     # 验证并发参数
     max_concurrent = validate_concurrent_value(args.max_concurrent)
 
-    # --only-images 模式：仅下载图片
+    # --only-images 模式：三阶段优化处理（Base64转换 + Header准备 + 智能下载）
     if args.only_images:
-        from src.tools.image_downloader import ImageDownloader
+        from src.tools.optimized_only_images_workflow import OptimizedOnlyImagesWorkflow
 
-        downloader = ImageDownloader(
+        logger.info("🚀 开始三阶段优化--only-images处理流程")
+        logger.info("Phase 1: 实时Base64转换")
+        logger.info("Phase 2: 全局Header准备")
+        logger.info("Phase 3: 智能下载（按需Pin增强）")
+
+        # 创建优化后的工作流程
+        workflow = OptimizedOnlyImagesWorkflow(
             output_dir=args.output,
             max_concurrent=max_concurrent,
-            proxy=args.proxy,
-            prefer_requests=True
+            proxy=args.proxy
         )
 
         try:
+            # 执行优化后的三阶段工作流程
             if args.query:
-                # 下载指定关键词的图片
-                logger.warning(f"开始下载关键词图片: {args.query}")
-                stats = await downloader.download_missing_images_for_keyword(args.query)
-                logger.warning(f"下载完成: {stats['downloaded']} 成功, {stats['failed']} 失败")
+                logger.info(f"🎯 目标关键词: {args.query}")
             else:
-                # 下载所有关键词的图片
-                logger.warning("开始下载所有关键词的缺失图片")
-                stats = await downloader.download_all_missing_images()
-                logger.warning(f"下载完成: {stats['keywords']} 个关键词, {stats['downloaded']} 成功, {stats['failed']} 失败")
+                logger.info("🎯 处理所有关键词")
 
-            return 0
+            # 执行工作流程
+            result = await workflow.execute(target_keyword=args.query)
+
+            if result["status"] == "success":
+                logger.info("🎉 三阶段工作流程执行成功")
+
+                # 显示详细统计
+                stats = result.get("stats", {})
+
+                # Phase 1 统计
+                phase1_stats = stats.get("phase1_base64_conversion", {})
+                if phase1_stats.get("total_converted", 0) > 0:
+                    logger.info(f"📊 Phase 1: 转换了 {phase1_stats['total_converted']} 个base64编码Pin")
+
+                # Phase 2 统计
+                phase2_stats = stats.get("phase2_header_preparation", {})
+                if phase2_stats.get("valid", False):
+                    logger.info(f"📊 Phase 2: Headers准备成功 ({phase2_stats.get('count', 0)} 个字段)")
+
+                # Phase 3 统计
+                phase3_stats = stats.get("phase3_smart_download", {})
+                if phase3_stats:
+                    logger.info(f"📊 Phase 3: 下载统计 {phase3_stats}")
+
+                # 总执行时间
+                total_time = stats.get("total_execution_time", 0)
+                logger.info(f"⏱️ 总执行时间: {total_time:.2f} 秒")
+
+                return 0
+            else:
+                logger.error(f"❌ 工作流程执行失败: {result.get('message', '未知错误')}")
+                return 1
 
         except Exception as e:
-            logger.error(f"图片下载失败: {e}")
+            logger.error(f"优化工作流程执行失败: {e}")
             if args.debug:
                 import traceback
                 logger.error(traceback.format_exc())
             return 1
-        finally:
-            # 清理资源
-            try:
-                await downloader.close()
-            except Exception as e:
-                logger.warning(f"清理下载器资源失败: {e}")
 
     # 普通模式：数据采集
     scraper = None

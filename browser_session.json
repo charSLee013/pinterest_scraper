@@ -14,35 +14,35 @@
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
     "Referer": "https://www.pinterest.com/",
-    "Cookie": "_GRECAPTCHA=09ANMylND2z04ZfHrPHDjmvn-VlghZA0aNHuNLrQT5RRz-ZKBoy7wJVmsQuT4D2pMiDjskNCiykDZ-bybU-JpZlmc; csrftoken=a8db45af6278306efce17ea15541b516; _pinterest_sess=TWc9PSZlR1VwMmxoaUNOeDVZa25BSGcwTXdZVlAzVk4xTGhiK1AyNGNGY2F3ZWsvYTJBaEkrT29jTDlPdHQ1SGR2OGhtbHFubnYwQy84NzE5T3VrbHExNUJseHB3UFBZZWxGckhieXJ0Z0tSeHpIQT0mR3RzWVN3cXc4ZmtSQmlKYi9jNDNtdWgxV2tVPQ==; _auth=0; _routing_id=\"e94314e1-c74c-4808-ae9e-057d27ee3ba1\"; sessionFunnelEventLogged=1"
+    "Cookie": "_GRECAPTCHA=09ANMylNCRTiwvrXDrEunEtX_jQQwAezysr-Uz_Rgr2FdiYtEKbwRQ-DJv3sLbzBG7xXcCtB5804mASWbPqZSStog; csrftoken=83493c53f6126ab4741564bb839798c1; _pinterest_sess=TWc9PSZUdjlCNjN4Y0FYYzJxSVBRZ3ZjQzhncXdzTHhNR09uYTh6Q1hTWWhJUU12NU9yZWx4dGhCampNMitxdzh6ZWtua0o4ZGpDSmxmTCt3dDF3T2Q2Q2dzN3R1OXNNZkVRbGZqRU1BTEVYYUg3OD0majdzN2xCamgyUnNSY3lFWkdacnpwSjlsT2R3PQ==; _auth=0; _routing_id=\"52a0f8c6-cab5-41f1-9e09-f4d35ece5286\"; sessionFunnelEventLogged=1"
   },
   "cookies": [
     {
       "name": "_GRECAPTCHA",
-      "value": "09ANMylND2z04ZfHrPHDjmvn-VlghZA0aNHuNLrQT5RRz-ZKBoy7wJVmsQuT4D2pMiDjskNCiykDZ-bybU-JpZlmc",
+      "value": "09ANMylNCRTiwvrXDrEunEtX_jQQwAezysr-Uz_Rgr2FdiYtEKbwRQ-DJv3sLbzBG7xXcCtB5804mASWbPqZSStog",
       "domain": "www.recaptcha.net",
       "path": "/recaptcha",
-      "expires": 1767990301.221481,
+      "expires": 1768074991.828841,
       "httpOnly": true,
       "secure": true,
       "sameSite": "None"
     },
     {
       "name": "csrftoken",
-      "value": "a8db45af6278306efce17ea15541b516",
+      "value": "83493c53f6126ab4741564bb839798c1",
       "domain": "www.pinterest.com",
       "path": "/",
-      "expires": 1783974291.844545,
+      "expires": 1784058981.56915,
       "httpOnly": false,
       "secure": true,
       "sameSite": "Lax"
     },
     {
       "name": "_pinterest_sess",
-      "value": "TWc9PSZlR1VwMmxoaUNOeDVZa25BSGcwTXdZVlAzVk4xTGhiK1AyNGNGY2F3ZWsvYTJBaEkrT29jTDlPdHQ1SGR2OGhtbHFubnYwQy84NzE5T3VrbHExNUJseHB3UFBZZWxGckhieXJ0Z0tSeHpIQT0mR3RzWVN3cXc4ZmtSQmlKYi9jNDNtdWgxV2tVPQ==",
+      "value": "TWc9PSZUdjlCNjN4Y0FYYzJxSVBRZ3ZjQzhncXdzTHhNR09uYTh6Q1hTWWhJUU12NU9yZWx4dGhCampNMitxdzh6ZWtua0o4ZGpDSmxmTCt3dDF3T2Q2Q2dzN3R1OXNNZkVRbGZqRU1BTEVYYUg3OD0majdzN2xCamgyUnNSY3lFWkdacnpwSjlsT2R3PQ==",
       "domain": ".pinterest.com",
       "path": "/",
-      "expires": 1783542291.844656,
+      "expires": 1783626981.569297,
       "httpOnly": true,
       "secure": true,
       "sameSite": "None"
@@ -52,17 +52,17 @@
       "value": "0",
       "domain": ".pinterest.com",
       "path": "/",
-      "expires": 1783542291.844705,
+      "expires": 1783626981.569386,
       "httpOnly": true,
       "secure": true,
       "sameSite": "Lax"
     },
     {
       "name": "_routing_id",
-      "value": "\"e94314e1-c74c-4808-ae9e-057d27ee3ba1\"",
+      "value": "\"52a0f8c6-cab5-41f1-9e09-f4d35ece5286\"",
       "domain": "www.pinterest.com",
       "path": "/",
-      "expires": 1752524691.844751,
+      "expires": 1752609381.569451,
       "httpOnly": true,
       "secure": false,
       "sameSite": "Lax"
@@ -72,7 +72,7 @@
       "value": "1",
       "domain": "www.pinterest.com",
       "path": "/",
-      "expires": 1752481497,
+      "expires": 1752566188,
       "httpOnly": false,
       "secure": true,
       "sameSite": "Lax"

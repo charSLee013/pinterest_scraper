@@ -93,6 +93,44 @@ class Pin(Base):
     def stats_dict(self, value: Dict[str, Any]):
         """设置统计信息字典"""
         self.stats = json.dumps(value) if value else None
+
+    def _format_datetime(self, dt_value) -> Optional[str]:
+        """格式化时间字段
+
+        Args:
+            dt_value: 时间值（可能是datetime对象、字符串或None）
+
+        Returns:
+            格式化后的ISO时间字符串或None
+        """
+        if not dt_value:
+            return None
+
+        # 如果是空字符串，返回None
+        if isinstance(dt_value, str) and dt_value.strip() == '':
+            return None
+
+        # 如果是datetime对象，直接转换
+        if hasattr(dt_value, 'isoformat'):
+            return dt_value.isoformat()
+
+        # 如果是字符串，尝试解析
+        if isinstance(dt_value, str):
+            try:
+                from datetime import datetime
+                # 尝试解析常见的时间格式
+                for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S.%f']:
+                    try:
+                        parsed_dt = datetime.strptime(dt_value, fmt)
+                        return parsed_dt.isoformat()
+                    except ValueError:
+                        continue
+                # 如果都解析失败，返回原字符串
+                return dt_value
+            except Exception:
+                return None
+
+        return None
     
     @hybrid_property
     def raw_data_dict(self) -> Dict[str, Any]:
@@ -111,10 +149,13 @@ class Pin(Base):
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式，兼容原有的Pin数据格式"""
-        # 优先使用原始数据
+        # 优先使用原始数据，但确保时间字段正确格式化
         if self.raw_data:
             try:
                 data = json.loads(self.raw_data)
+                # 确保时间字段正确格式化
+                data['created_at'] = self._format_datetime(self.created_at)
+                data['updated_at'] = self._format_datetime(self.updated_at)
                 # 确保包含下载状态信息
                 data['downloaded'] = any(task.status == 'completed' for task in self.download_tasks)
                 if data['downloaded']:
@@ -141,6 +182,9 @@ class Pin(Base):
             'image_urls': self.image_urls_dict,
             'largest_image_url': self.largest_image_url,
             'stats': self.stats_dict,
+            'created_at': self._format_datetime(self.created_at),
+            'updated_at': self._format_datetime(self.updated_at),
+            'query': self.query,
             'downloaded': any(task.status == 'completed' for task in self.download_tasks),
             'download_path': next((task.local_path for task in self.download_tasks if task.status == 'completed'), None)
         }

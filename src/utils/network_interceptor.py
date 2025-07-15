@@ -120,6 +120,32 @@ class PinDataExtractor:
         return []
 
     @staticmethod
+    def _normalize_pin_id(pin_id: str) -> str:
+        """标准化Pin ID格式，处理Base64编码的GraphQL ID
+
+        Args:
+            pin_id: 原始Pin ID
+
+        Returns:
+            标准化后的Pin ID (纯数字格式)
+        """
+        if not pin_id:
+            return ""
+
+        # 检查是否为Base64编码的GraphQL ID (以UGlu开头)
+        if pin_id.startswith('UGlu'):
+            try:
+                import base64
+                decoded = base64.b64decode(pin_id).decode('utf-8')
+                if decoded.startswith('Pin:'):
+                    # 去掉'Pin:'前缀，返回纯数字ID
+                    return decoded[4:]
+            except Exception as e:
+                logger.error(f"解码Pin ID失败: {e}")
+
+        return pin_id
+
+    @staticmethod
     def _is_valid_pin(data: Dict) -> bool:
         """验证数据是否为有效的Pin数据
 
@@ -129,14 +155,33 @@ class PinDataExtractor:
         Returns:
             是否为有效Pin数据
         """
-        # Pin数据必须包含的关键字段之一
-        required_fields = ['id', 'images', 'image', 'url', 'title', 'description', 'entityId']
+        # 必须有有效的Pin ID
+        pin_id = data.get('id') or data.get('entityId', '')
+        if not pin_id:
+            return False
+
+        # 标准化Pin ID并验证是否为数字
+        normalized_id = PinDataExtractor._normalize_pin_id(str(pin_id))
+        if not normalized_id or not normalized_id.isdigit():
+            return False
+
+        # 必须包含图片信息
+        has_images = (
+            data.get('images') or
+            data.get('image') or
+            data.get('image_signature') or
+            (data.get('__typename') == 'Pin' and 'images' in data)
+        )
+
+        if not has_images:
+            return False
 
         # 检查GraphQL Pin格式
         if data.get('__typename') == 'Pin':
             return True
 
-        # 检查传统格式
+        # 检查传统格式的关键字段
+        required_fields = ['title', 'description', 'url']
         return any(field in data for field in required_fields)
 
     @staticmethod
@@ -168,7 +213,7 @@ class PinDataExtractor:
 
         # 提取Pin ID (支持GraphQL格式)
         pin_id = raw_pin.get("id") or raw_pin.get("entityId", "")
-        normalized["id"] = str(pin_id)
+        normalized["id"] = PinDataExtractor._normalize_pin_id(str(pin_id))
 
         # 提取标题和描述
         normalized["title"] = raw_pin.get("title", "")

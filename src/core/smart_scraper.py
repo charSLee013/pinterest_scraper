@@ -385,8 +385,8 @@ class SmartScraper:
 
         logger.info(f"第二阶段：Pin详情页深度扩展，初始队列: {len(pin_queue)} 个Pin")
 
-        # 创建进度条
-        pbar = tqdm(total=target_count, desc="深度采集", unit="pins",
+        # 🔥 修复：创建进度条，描述更准确反映实时保存状态
+        pbar = tqdm(total=target_count, desc="实时保存", unit="pins",
                    initial=len(all_pins), leave=False)
 
         try:
@@ -406,6 +406,7 @@ class SmartScraper:
                     # 有新数据，重置计数器
                     no_new_data_streak = 0
                     pins_before = len(all_pins)
+                    saved_pins_count = 0  # 🔥 修复：记录实际保存成功的Pin数量
 
                     # 去重添加新Pin并实时保存到数据库
                     for related_pin in related_pins:
@@ -417,12 +418,15 @@ class SmartScraper:
                             self.seen_pin_ids.add(related_id)
                             all_pins.append(related_pin)
 
-                            # 🔥 修复：第二阶段实时保存到数据库
+                            # 🔥 修复：第二阶段实时保存到数据库，只有成功时才更新进度条
                             if self.repository and query:
                                 try:
                                     success = self.repository.save_pin_immediately(related_pin, query, self.session_id)
                                     if success:
+                                        saved_pins_count += 1
                                         logger.debug(f"💾 第二阶段实时保存Pin: {related_id}")
+                                        # 🔥 修复：立即更新进度条，与第一阶段逻辑一致
+                                        pbar.update(1)
                                         self.stats["pins_saved_realtime"] += 1
                                     else:
                                         logger.warning(f"⚠️  第二阶段保存失败: {related_id}")
@@ -433,15 +437,15 @@ class SmartScraper:
                             if related_id not in visited_pins:
                                 pin_queue.append(related_id)
 
-                    new_pins_count = len(all_pins) - pins_before
-                    pbar.update(new_pins_count)
+                    # 🔥 修复：更新进度条后缀信息，显示实际保存数量
                     pbar.set_postfix({
                         "队列": len(pin_queue),
                         "无新数据": no_new_data_streak,
-                        "当前Pin": pin_id[:8]
+                        "当前Pin": pin_id[:8],
+                        "本轮保存": saved_pins_count
                     })
 
-                    logger.debug(f"Pin {pin_id} 获得 {new_pins_count} 个新Pin，队列剩余: {len(pin_queue)}")
+                    logger.debug(f"Pin {pin_id} 获得 {len(all_pins) - pins_before} 个新Pin，实际保存 {saved_pins_count} 个，队列剩余: {len(pin_queue)}")
                 else:
                     # 无新数据，增加计数器
                     no_new_data_streak += 1
@@ -467,8 +471,11 @@ class SmartScraper:
             stop_reason = "未知原因"
 
         actual_collected = len(all_pins)
+        # 🔥 修复：添加实际保存数量统计
+        actual_saved = self.stats.get("pins_saved_realtime", 0)
         logger.info(f"混合采集完成: {actual_collected}/{target_count} ({stop_reason})")
         logger.info(f"混合策略详情: 第一阶段 {len(base_pins)} + 第二阶段 {actual_collected - len(base_pins)} = 总计 {actual_collected}")
+        logger.info(f"💾 实际保存统计: {actual_saved} 个Pin已保存到数据库")
 
         # 返回实际采集到的所有Pin，不截断
         return all_pins
