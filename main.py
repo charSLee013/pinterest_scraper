@@ -20,7 +20,12 @@ def setup_signal_handlers():
     """设置信号处理器以优雅处理中断"""
     def signal_handler(signum, frame):
         logger.info(f"接收到信号 {signum}，正在优雅退出...")
-        # 不直接退出，让KeyboardInterrupt异常处理
+
+        # 设置全局中断状态
+        from src.tools.stage_manager import _global_interrupt_manager
+        _global_interrupt_manager.set_interrupted()
+
+        # 抛出KeyboardInterrupt以确保异常传播
         raise KeyboardInterrupt()
 
     # 在Windows和Unix系统上设置信号处理
@@ -168,24 +173,29 @@ async def async_main():
     # 验证并发参数
     max_concurrent = validate_concurrent_value(args.max_concurrent)
 
-    # --only-images 模式：三阶段优化处理（Base64转换 + Header准备 + 智能下载）
+    # --only-images 模式：四阶段重构处理（数据库修复 + Base64转换 + Pin增强 + 图片下载）
     if args.only_images:
-        from src.tools.optimized_only_images_workflow import OptimizedOnlyImagesWorkflow
+        from src.tools.refactored_workflow import RefactoredOnlyImagesWorkflow
 
-        logger.info("🚀 开始三阶段优化--only-images处理流程")
-        logger.info("Phase 1: 实时Base64转换")
-        logger.info("Phase 2: 全局Header准备")
-        logger.info("Phase 3: 智能下载（按需Pin增强）")
+        logger.info("🚀 开始四阶段重构--only-images处理流程")
+        logger.info("阶段1: 数据库修复与检测")
+        logger.info("阶段2: Base64编码Pin转换")
+        logger.info("阶段3: Pin详情数据补全")
+        logger.info("阶段4: 图片文件下载")
 
-        # 创建优化后的工作流程
-        workflow = OptimizedOnlyImagesWorkflow(
+        # 创建重构后的工作流程
+        workflow = RefactoredOnlyImagesWorkflow(
             output_dir=args.output,
             max_concurrent=max_concurrent,
             proxy=args.proxy
         )
 
         try:
-            # 执行优化后的三阶段工作流程
+            # 重置全局中断状态
+            from src.tools.stage_manager import _global_interrupt_manager
+            _global_interrupt_manager.reset()
+
+            # 执行优化后的四阶段工作流程
             if args.query:
                 logger.info(f"🎯 目标关键词: {args.query}")
             else:
@@ -195,34 +205,38 @@ async def async_main():
             result = await workflow.execute(target_keyword=args.query)
 
             if result["status"] == "success":
-                logger.info("🎉 三阶段工作流程执行成功")
+                logger.info("🎉 四阶段工作流程执行成功")
 
                 # 显示详细统计
                 stats = result.get("stats", {})
 
-                # Phase 1 统计
-                phase1_stats = stats.get("phase1_base64_conversion", {})
-                if phase1_stats.get("total_converted", 0) > 0:
-                    logger.info(f"📊 Phase 1: 转换了 {phase1_stats['total_converted']} 个base64编码Pin")
+                # 阶段统计
+                stage1_stats = stats.get("stage1_database_repair", {})
+                stage2_stats = stats.get("stage2_base64_conversion", {})
+                stage3_stats = stats.get("stage3_pin_enhancement", {})
+                stage4_stats = stats.get("stage4_image_download", {})
 
-                # Phase 2 统计
-                phase2_stats = stats.get("phase2_header_preparation", {})
-                if phase2_stats.get("valid", False):
-                    logger.info(f"📊 Phase 2: Headers准备成功 ({phase2_stats.get('count', 0)} 个字段)")
+                if stage2_stats.get("total_converted", 0) > 0:
+                    logger.info(f"📊 阶段2: 转换了 {stage2_stats['total_converted']} 个base64编码Pin")
 
-                # Phase 3 统计
-                phase3_stats = stats.get("phase3_smart_download", {})
-                if phase3_stats:
-                    logger.info(f"📊 Phase 3: 下载统计 {phase3_stats}")
+                if stage4_stats:
+                    logger.info(f"📊 阶段4: 下载统计 {stage4_stats}")
 
                 # 总执行时间
                 total_time = stats.get("total_execution_time", 0)
                 logger.info(f"⏱️ 总执行时间: {total_time:.2f} 秒")
 
                 return 0
+            elif result["status"] == "interrupted":
+                logger.warning(f"🛑 工作流程被用户中断: {result.get('message', '用户中断')}")
+                return 130  # 标准的中断退出码
             else:
                 logger.error(f"❌ 工作流程执行失败: {result.get('message', '未知错误')}")
                 return 1
+
+        except KeyboardInterrupt:
+            logger.warning("🛑 --only-images工作流程被用户中断")
+            return 130  # 标准的中断退出码
 
         except Exception as e:
             logger.error(f"优化工作流程执行失败: {e}")

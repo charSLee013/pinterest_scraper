@@ -4,8 +4,12 @@
 """
 改进的Pin详情提取器
 
-基于用户验证的方案：通过访问Pin详情页面HTML来获取完整的图片信息
-解决第二阶段采集中base64编码Pin无法获取图片URL的问题
+⚠️ 已弃用：此实现使用HTTP请求方式，已被浏览器+NetworkInterceptor方式替代
+新的实现位于：
+- stage_implementations.py:fetch_pin_detail_with_browser()
+- smart_pin_enhancer.py:_fetch_pin_detail()
+
+保留此类仅为向后兼容性，建议使用新的实现方式
 """
 
 import asyncio
@@ -369,8 +373,8 @@ class ImprovedPinDetailExtractor:
             # 构建标准化的Pin数据
             pin_data = {
                 'id': str(raw_pin_data.get('id', '')),
-                'title': raw_pin_data.get('title', ''),
-                'description': raw_pin_data.get('description', ''),
+                'title': self._extract_title_text(raw_pin_data.get('title', '')),
+                'description': self._extract_description_text(raw_pin_data.get('description', '')),
                 'url': raw_pin_data.get('url', ''),
                 'link': raw_pin_data.get('link', ''),
                 'image_urls': image_urls,
@@ -396,3 +400,69 @@ class ImprovedPinDetailExtractor:
         except Exception as e:
             logger.error(f"标准化Pin数据时发生异常: {e}")
             return {}
+
+    def _extract_title_text(self, title_data) -> str:
+        """从复杂的title数据结构中提取纯文本
+
+        Args:
+            title_data: title数据，可能是字符串或字典
+
+        Returns:
+            提取的文本字符串
+        """
+        try:
+            if isinstance(title_data, str):
+                return title_data
+            elif isinstance(title_data, dict):
+                # 处理复杂的title结构
+                if 'text' in title_data and title_data['text']:
+                    return str(title_data['text'])
+                elif 'format' in title_data and title_data['format']:
+                    return str(title_data['format'])
+                elif 'args' in title_data and title_data['args']:
+                    # 如果args是列表，尝试提取文本
+                    args = title_data['args']
+                    if isinstance(args, list) and args:
+                        return str(args[0])
+                else:
+                    # 尝试找到任何文本字段
+                    for key, value in title_data.items():
+                        if isinstance(value, str) and value.strip():
+                            return value
+            return ""
+        except Exception as e:
+            logger.debug(f"提取title文本失败: {e}")
+            return ""
+
+    def _extract_description_text(self, description_data) -> str:
+        """从复杂的description数据结构中提取纯文本
+
+        Args:
+            description_data: description数据，可能是字符串或字典
+
+        Returns:
+            提取的文本字符串
+        """
+        try:
+            if isinstance(description_data, str):
+                return description_data
+            elif isinstance(description_data, dict):
+                # 处理复杂的description结构
+                if 'text' in description_data and description_data['text']:
+                    return str(description_data['text'])
+                elif 'format' in description_data and description_data['format']:
+                    return str(description_data['format'])
+                elif 'args' in description_data and description_data['args']:
+                    # 如果args是列表，尝试提取文本
+                    args = description_data['args']
+                    if isinstance(args, list) and args:
+                        return str(args[0])
+                else:
+                    # 尝试找到任何文本字段
+                    for key, value in description_data.items():
+                        if isinstance(value, str) and value.strip():
+                            return value
+            return ""
+        except Exception as e:
+            logger.debug(f"提取description文本失败: {e}")
+            return ""

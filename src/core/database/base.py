@@ -50,13 +50,15 @@ class DatabaseManager:
             echo=False  # 设置为True可以看到SQL语句
         )
         
-        # 启用SQLite外键约束
+        # 启用SQLite外键约束和安全配置
         @event.listens_for(Engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")  # 启用WAL模式提高并发性能
-            cursor.execute("PRAGMA synchronous=NORMAL")  # 平衡性能和安全性
+            cursor.execute("PRAGMA synchronous=FULL")  # 🔒 提高同步级别确保数据安全
+            cursor.execute("PRAGMA busy_timeout=30000")  # 🔒 增加锁等待时间，避免并发冲突
+            cursor.execute("PRAGMA wal_autocheckpoint=1000")  # 🔒 定期检查点，保持WAL文件大小
             cursor.close()
         
         # 创建会话工厂

@@ -64,7 +64,6 @@ class SmartScraper:
 
         # 数据收集状态
         self.collected_pins = []
-        self.seen_pin_ids = set()
 
         # 性能统计
         self.stats = {
@@ -375,87 +374,103 @@ class SmartScraper:
             return base_pins[:target_count]
 
         logger.info(f"第一阶段完成，获得 {len(base_pins)} 个Pin，开始Pin详情页深度扩展")
-        
-        # 第二阶段：Pin详情页深度扩展
+
+        # 第二阶段：Pin详情页深度扩展 - 重构版
+        # 1. 从数据库读取有图片链接的pins到set (按新到旧排序)
+        pins_with_images = self.repository.load_pins_with_images(query) if self.repository else []
+        pin_set = set([pin['id'] for pin in pins_with_images])
+
+        logger.info(f"第二阶段：从数据库加载 {len(pin_set)} 个有图片的Pin作为扩展源")
+
         all_pins = list(base_pins)
-        pin_queue = deque([pin.get('id') for pin in base_pins if pin.get('id')])
-        visited_pins = set()
         no_new_data_streak = 0
         max_no_new_data_streak = 30  # 连续30个Pin无新数据才退出
-
-        logger.info(f"第二阶段：Pin详情页深度扩展，初始队列: {len(pin_queue)} 个Pin")
 
         # 🔥 修复：创建进度条，描述更准确反映实时保存状态
         pbar = tqdm(total=target_count, desc="实时保存", unit="pins",
                    initial=len(all_pins), leave=False)
 
         try:
-            while pin_queue and len(all_pins) < target_count and no_new_data_streak < max_no_new_data_streak:
-                pin_id = pin_queue.popleft()
+            # 2-5. 循环：pop pin -> 访问详情页 -> 拦截API -> 保存并获取新pin id -> 更新set
+            while pin_set and len(all_pins) < target_count and no_new_data_streak < max_no_new_data_streak:
+                # 2. 从set中pop一个pin，用playwright访问详情页
+                pin_id = pin_set.pop()
 
-                # 跳过已访问的Pin
-                if pin_id in visited_pins:
-                    continue
+                # 🔥 修复：添加中断检查
+                if self._interrupt_requested:
+                    logger.info("检测到中断请求，停止第二阶段采集")
+                    break
 
-                visited_pins.add(pin_id)
+                remaining_count = target_count - len(all_pins)
+                logger.debug(f"访问Pin详情页: {pin_id}，还需: {remaining_count}")
 
-                # 采集Pin详情页的相关推荐
-                related_pins = await self._scrape_pin_detail_with_queue(pin_id, target_count - len(all_pins))
+                # 3. 滚动拦截RelatedModulesResource，提取有效pin数据
+                related_pins = await self._scrape_pin_detail_with_queue(pin_id, remaining_count)
 
                 if related_pins:
-                    # 有新数据，重置计数器
-                    no_new_data_streak = 0
-                    pins_before = len(all_pins)
-                    saved_pins_count = 0  # 🔥 修复：记录实际保存成功的Pin数量
+                    # 4. 直接覆盖式插入数据库，根据数据库去重获取真正新的pin id
+                    if self.repository and query:
+                        new_pin_ids = self.repository.save_pins_and_get_new_ids(related_pins, query, self.session_id)
 
-                    # 去重添加新Pin并实时保存到数据库
-                    for related_pin in related_pins:
-                        if len(all_pins) >= target_count:
-                            break
+                        if new_pin_ids:
+                            # 5. 将新pin id放入set，循环直到无新数据或set为空
+                            pin_set.update(new_pin_ids)
 
-                        related_id = related_pin.get('id')
-                        if related_id and related_id not in self.seen_pin_ids:
-                            self.seen_pin_ids.add(related_id)
-                            all_pins.append(related_pin)
+                            # 更新统计信息
+                            saved_pins_count = len(new_pin_ids)
+                            self.stats["pins_saved_realtime"] = self.stats.get("pins_saved_realtime", 0) + saved_pins_count
 
-                            # 🔥 修复：第二阶段实时保存到数据库，只有成功时才更新进度条
-                            if self.repository and query:
-                                try:
-                                    success = self.repository.save_pin_immediately(related_pin, query, self.session_id)
-                                    if success:
-                                        saved_pins_count += 1
-                                        logger.debug(f"💾 第二阶段实时保存Pin: {related_id}")
-                                        # 🔥 修复：立即更新进度条，与第一阶段逻辑一致
-                                        pbar.update(1)
-                                        self.stats["pins_saved_realtime"] += 1
-                                    else:
-                                        logger.warning(f"⚠️  第二阶段保存失败: {related_id}")
-                                except Exception as e:
-                                    logger.error(f"❌ 第二阶段保存异常: {related_id}, 错误: {e}")
+                            # 将新pins添加到all_pins用于返回
+                            for pin in related_pins:
+                                if pin.get('id') in new_pin_ids:
+                                    all_pins.append(pin)
 
-                            # 将新Pin加入队列用于进一步扩展
-                            if related_id not in visited_pins:
-                                pin_queue.append(related_id)
+                            no_new_data_streak = 0  # 重置连续无新数据计数器
 
-                    # 🔥 修复：更新进度条后缀信息，显示实际保存数量
+                            logger.debug(f"Pin {pin_id} 获得 {len(related_pins)} 个相关Pin，数据库新增 {saved_pins_count} 个")
+                        else:
+                            no_new_data_streak += 1
+                            logger.debug(f"Pin {pin_id} 相关Pin均为重复，连续无新数据: {no_new_data_streak}")
+                    else:
+                        # 没有repository时的兼容处理
+                        all_pins.extend(related_pins)
+                        no_new_data_streak = 0
+                        saved_pins_count = len(related_pins)
+
+                    # 🔥 修复：更新进度条，显示实际保存数量
+                    if self.repository and query and new_pin_ids:
+                        pbar.update(saved_pins_count)
+
                     pbar.set_postfix({
-                        "队列": len(pin_queue),
-                        "无新数据": no_new_data_streak,
-                        "当前Pin": pin_id[:8],
-                        "本轮保存": saved_pins_count
+                        'set大小': len(pin_set),
+                        '无新数据': no_new_data_streak,
+                        '当前Pin': pin_id[:15] + '...' if len(pin_id) > 15 else pin_id
                     })
-
-                    logger.debug(f"Pin {pin_id} 获得 {len(all_pins) - pins_before} 个新Pin，实际保存 {saved_pins_count} 个，队列剩余: {len(pin_queue)}")
                 else:
-                    # 无新数据，增加计数器
                     no_new_data_streak += 1
-                    pbar.set_postfix({
-                        "队列": len(pin_queue),
-                        "无新数据": no_new_data_streak,
-                        "当前Pin": pin_id[:8]
-                    })
+                    logger.debug(f"Pin {pin_id} 详情页采集失败，连续无新数据: {no_new_data_streak}")
 
-                    logger.debug(f"Pin {pin_id} 无新数据，连续无新数据: {no_new_data_streak}/{max_no_new_data_streak}")
+                # 🔥 修复：更新进度条状态
+                pbar.set_postfix({
+                    'set大小': len(pin_set),
+                    '无新数据': no_new_data_streak,
+                    '当前Pin': pin_id[:15] + '...' if len(pin_id) > 15 else pin_id
+                })
+
+                # 检查是否达到目标数量
+                if len(all_pins) >= target_count:
+                    stop_reason = "达到目标数量"
+                    break
+
+                # 检查连续无新数据
+                if no_new_data_streak >= max_no_new_data_streak:
+                    stop_reason = f"连续{max_no_new_data_streak}个Pin无新数据"
+                    break
+
+                # 检查pin_set是否为空
+                if not pin_set:
+                    stop_reason = "pin_set为空，无更多Pin可扩展"
+                    break
 
         finally:
             pbar.close()
@@ -465,8 +480,8 @@ class SmartScraper:
             stop_reason = "达到目标数量"
         elif no_new_data_streak >= max_no_new_data_streak:
             stop_reason = f"连续 {no_new_data_streak} 个Pin无新数据"
-        elif not pin_queue:
-            stop_reason = "Pin队列已空"
+        elif not pin_set:
+            stop_reason = "pin_set为空，无更多Pin可扩展"
         else:
             stop_reason = "未知原因"
 
@@ -490,13 +505,13 @@ class SmartScraper:
         """
         pin_url = f"https://www.pinterest.com/pin/{pin_id}/"
 
-        # 使用异步上下文管理器确保资源正确清理
-        async with NetworkInterceptor(max_cache_size=max_count * 2, verbose=False, target_count=0) as interceptor:
+        # 使用异步上下文管理器确保资源正确清理 - 第二阶段只关注RelatedModulesResource
+        async with NetworkInterceptor(max_cache_size=max_count * 2, verbose=self.debug, target_count=0, mode="related_only") as interceptor:
             browser = BrowserManager(
                 proxy=self.proxy,
                 timeout=30,
                 cookie_path=self.cookie_path,
-                headless=True,
+                headless=True,  # 生产环境使用无头模式
                 enable_network_interception=True
             )
 
@@ -531,15 +546,15 @@ class SmartScraper:
 
                     pins_before = len(interceptor.extracted_pins)
 
-                    # 滚动页面
-                    await browser.page.evaluate("window.scrollBy(0, window.innerHeight)")
+                    # 使用真实的PageDown键盘事件滚动（比JavaScript更自然）
+                    await browser.page.keyboard.press("PageDown")
                     # 滚动后的人类行为延迟
-                    await asyncio.sleep(random.uniform(1.5, 3.0))
+                    await asyncio.sleep(random.uniform(2.0, 4.0))
                     scroll_count += 1
 
-                    # 等待页面加载
+                    # 等待页面加载（使用domcontentloaded而不是networkidle）
                     try:
-                        await browser.page.wait_for_load_state('networkidle', timeout=3000)
+                        await browser.page.wait_for_load_state('domcontentloaded', timeout=3000)
                     except:
                         pass
 
@@ -578,7 +593,6 @@ class SmartScraper:
     def _reset_state(self):
         """重置采集状态"""
         self.collected_pins.clear()
-        self.seen_pin_ids.clear()
         self._interrupt_requested = False
         self._saved_count = 0
         self._baseline_count = 0  # 采集基准数量

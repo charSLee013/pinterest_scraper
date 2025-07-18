@@ -165,11 +165,12 @@ class PinDataExtractor:
         if not normalized_id or not normalized_id.isdigit():
             return False
 
-        # 必须包含图片信息
+        # 必须包含图片信息（支持GraphQL格式的imageSpec_*字段）
         has_images = (
             data.get('images') or
             data.get('image') or
             data.get('image_signature') or
+            any(key.startswith('imageSpec_') for key in data.keys()) or  # GraphQL格式
             (data.get('__typename') == 'Pin' and 'images' in data)
         )
 
@@ -211,9 +212,9 @@ class PinDataExtractor:
             "extracted_at": datetime.now().isoformat()
         }
 
-        # 提取Pin ID (支持GraphQL格式)
-        pin_id = raw_pin.get("id") or raw_pin.get("entityId", "")
-        normalized["id"] = PinDataExtractor._normalize_pin_id(str(pin_id))
+        # 提取Pin ID (优先使用entityId，这是真实的数字ID)
+        pin_id = raw_pin.get("entityId") or raw_pin.get("id", "")
+        normalized["id"] = str(pin_id) if pin_id else ""
 
         # 提取标题和描述
         normalized["title"] = raw_pin.get("title", "")
@@ -279,6 +280,15 @@ class PinDataExtractor:
             图片URL字典，键为尺寸，值为URL
         """
         image_urls = {}
+
+        # 处理GraphQL格式的imageSpec_*字段（新格式）
+        for key, value in pin_data.items():
+            if key.startswith("imageSpec_") and isinstance(value, dict) and "url" in value:
+                size_key = key.replace("imageSpec_", "")
+                if size_key == "orig":
+                    image_urls["original"] = value["url"]
+                else:
+                    image_urls[size_key] = value["url"]
 
         # 处理images字段（标准格式）
         if "images" in pin_data and isinstance(pin_data["images"], dict):
@@ -432,7 +442,7 @@ class NetworkInterceptor:
     支持数据提取、凭证管理和Pin详情页滚动策略
     """
 
-    def __init__(self, output_dir: str = "network_analysis/results", max_cache_size: int = 1000, verbose: bool = True, target_count: int = 0):
+    def __init__(self, output_dir: str = "network_analysis/results", max_cache_size: int = 1000, verbose: bool = True, target_count: int = 0, mode: str = "full"):
         """初始化网络拦截器
 
         Args:
@@ -440,12 +450,14 @@ class NetworkInterceptor:
             max_cache_size: 最大缓存大小，防止内存泄漏
             verbose: 是否输出详细日志
             target_count: 目标采集数量，用于进度条显示
+            mode: 拦截模式 ("full": 全部API, "related_only": 仅RelatedModulesResource)
         """
         self.verbose = verbose
         self.output_dir = output_dir
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.max_cache_size = max_cache_size
         self.target_count = target_count
+        self.mode = mode
 
         # 使用deque实现滑动窗口，防止内存泄漏
         self.network_logs = deque(maxlen=max_cache_size)
@@ -483,26 +495,38 @@ class NetworkInterceptor:
         os.makedirs(os.path.join(self.session_dir, "network_logs"), exist_ok=True)
         os.makedirs(os.path.join(self.session_dir, "api_responses"), exist_ok=True)
         
-        # Pinterest API相关的URL模式 - 增强版，支持Pin详情页
-        self.pinterest_api_patterns = [
-            "api.pinterest.com",
-            "v3/search/pins",
-            "BoardFeedResource",
-            "SearchResource",
-            "BaseSearchResource",  # 搜索API
-            "UserPinsResource",
-            "RelatedPinsResource",  # Pin详情页相关推荐
-            "PinResource",
-            "VisualSearchResource",  # 视觉搜索
-            "HomefeedResource",  # 首页推荐
-            "resource/",
-            "/v3/",
-            "graphql",
-            "_/graphql/",  # GraphQL端点
-            "CloseupDetailsResource",  # Pin详情
-            "MoreLikeThisResource",  # 更多相似内容
-            "RelatedPinFeedResource"  # 相关Pin推荐
-        ]
+        # 根据模式设置API拦截规则
+        if self.mode == "related_only":
+            # 第二阶段：只关注GraphQL端点的v3RelatedPinsForPinSeoQuery
+            self.pinterest_api_patterns = [
+                "_/graphql/"
+            ]
+            if self.verbose:
+                logger.info("🎯 NetworkInterceptor模式: 仅拦截GraphQL端点")
+        else:
+            # 第一阶段：全部API模式
+            self.pinterest_api_patterns = [
+                "api.pinterest.com",
+                "v3/search/pins",
+                "BoardFeedResource",
+                "SearchResource",
+                "BaseSearchResource",  # 搜索API
+                "UserPinsResource",
+                "RelatedPinsResource",  # Pin详情页相关推荐
+                "RelatedModulesResource",  # 🔥 修复：添加关键的RelatedModulesResource
+                "PinResource",
+                "VisualSearchResource",  # 视觉搜索
+                "HomefeedResource",  # 首页推荐
+                "resource/",
+                "/v3/",
+                "graphql",
+                "_/graphql/",  # GraphQL端点
+                "CloseupDetailsResource",  # Pin详情
+                "MoreLikeThisResource",  # 更多相似内容
+                "RelatedPinFeedResource"  # 相关Pin推荐
+            ]
+            if self.verbose:
+                logger.info("🔍 NetworkInterceptor模式: 拦截所有Pinterest API")
         
         if self.verbose:
             logger.info(f"网络拦截器初始化完成，会话ID: {self.session_id}")
@@ -510,18 +534,19 @@ class NetworkInterceptor:
     
     def _is_pinterest_api_request(self, url: str) -> bool:
         """判断是否为Pinterest API请求
-        
+
         Args:
             url: 请求URL
-            
+
         Returns:
             是否为Pinterest API请求
         """
         for pattern in self.pinterest_api_patterns:
             if pattern in url:
-                logger.debug(f"URL: {url} 匹配模式: {pattern}")
+                if self.verbose:
+                    logger.debug(f"✅ 匹配Pinterest API: {url} (模式: {pattern})")
                 return True
-        logger.debug(f"URL: {url} 未匹配任何Pinterest API模式")
+        # 移除未匹配的DEBUG日志，减少冗余输出
         return False
     
     def _extract_request_info(self, request: Request) -> Dict:
@@ -637,8 +662,9 @@ class NetworkInterceptor:
                     endpoint = parsed_url.path
                     self.stats["api_endpoints_hit"].add(endpoint)
 
-                logger.debug(f"拦截到API请求: {request.method} {request.url}")
-                logger.debug(f"当前日志数量: {len(self.network_logs)}, 认证凭证有效: {self.credential_extractor.is_valid()}")
+                if self.verbose:
+                    logger.debug(f"🔍 拦截API请求: {request.method} {request.url}")
+                    logger.debug(f"📊 当前日志数量: {len(self.network_logs)}, 认证凭证有效: {self.credential_extractor.is_valid()}")
         except Exception as e:
             logger.error(f"处理请求事件时发生错误: {e}")
             logger.error(f"请求URL: {request.url}")
@@ -651,10 +677,10 @@ class NetworkInterceptor:
         Args:
             response: Playwright响应对象
         """
-        logger.debug(f"_handle_response 被调用，URL: {response.url}, 状态: {response.status}")
         try:
             is_pinterest_api = self._is_pinterest_api_request(response.url)
-            logger.debug(f"URL: {response.url}，是否是Pinterest API响应: {is_pinterest_api}")
+            if self.verbose and is_pinterest_api:
+                logger.debug(f"📥 处理Pinterest API响应: {response.url}, 状态: {response.status}")
             if is_pinterest_api:
                 response_info = await self._extract_response_info(response)
 
@@ -709,11 +735,46 @@ class NetworkInterceptor:
                                 elif self.verbose:
                                     # 只在没有进度条时才输出日志
                                     logger.debug(f"提取到 {len(extracted_pins)} 个Pin，总计: {len(self.extracted_pins)}")
+                            else:
+                                # 调试：记录未提取到Pin的情况
+                                if self.verbose and "_/graphql/" in response.url:
+                                    logger.debug(f"GraphQL响应未提取到Pin数据: {response.url}")
+                                    if "data" in json_data:
+                                        data_keys = list(json_data["data"].keys()) if isinstance(json_data["data"], dict) else []
+                                        logger.debug(f"GraphQL响应data字段包含: {data_keys}")
+
+                                        # 详细检查v3RelatedPinsForPinSeoQuery结构
+                                        if "v3RelatedPinsForPinSeoQuery" in json_data["data"]:
+                                            query_data = json_data["data"]["v3RelatedPinsForPinSeoQuery"]
+                                            logger.debug(f"v3RelatedPinsForPinSeoQuery结构: {list(query_data.keys()) if isinstance(query_data, dict) else type(query_data)}")
+
+                                            if isinstance(query_data, dict) and "data" in query_data:
+                                                inner_data = query_data["data"]
+                                                logger.debug(f"v3RelatedPinsForPinSeoQuery.data结构: {list(inner_data.keys()) if isinstance(inner_data, dict) else type(inner_data)}")
+
+                                                if isinstance(inner_data, dict) and "connection" in inner_data:
+                                                    connection = inner_data["connection"]
+                                                    logger.debug(f"connection结构: {list(connection.keys()) if isinstance(connection, dict) else type(connection)}")
+
+                                                    if isinstance(connection, dict) and "edges" in connection:
+                                                        edges = connection["edges"]
+                                                        logger.debug(f"edges数量: {len(edges) if isinstance(edges, list) else type(edges)}")
+
+                                                        if isinstance(edges, list) and len(edges) > 0:
+                                                            first_edge = edges[0]
+                                                            logger.debug(f"第一个edge结构: {list(first_edge.keys()) if isinstance(first_edge, dict) else type(first_edge)}")
+
+                                                            if isinstance(first_edge, dict) and "node" in first_edge:
+                                                                node = first_edge["node"]
+                                                                logger.debug(f"第一个node结构: {list(node.keys())[:10] if isinstance(node, dict) else type(node)}")
+                                                                logger.debug(f"node有entityId: {'entityId' in node if isinstance(node, dict) else False}")
+                                                                logger.debug(f"node有imageSpec_orig: {'imageSpec_orig' in node if isinstance(node, dict) else False}")
 
                             if self.verbose:
-                                logger.debug(f"API响应: {response.url} (状态: {response.status})")
+                                logger.debug(f"📊 API响应处理完成: {response.url} (状态: {response.status})")
                         else:
-                            logger.debug(f"拦截到响应: {response.url} (状态: {response.status}), Content-Type: {response_info.get('content_type', 'N/A')}, Has JSON: {'json_data' in response_info}")
+                            if self.verbose:
+                                logger.debug(f"📄 API响应: {response.url} (状态: {response.status}), Content-Type: {response_info.get('content_type', 'N/A')}, Has JSON: {'json_data' in response_info}")
                     else:
                         # 如果找不到关联请求，按原方式记录
                         self.network_logs.append({

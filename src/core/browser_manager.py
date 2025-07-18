@@ -234,8 +234,8 @@ class BrowserManager:
                 if "pinterest.com/search" in url:
                     await self._establish_pinterest_session()
 
-                # 使用优化的60秒超时，增加网络空闲等待
-                await self.page.goto(url, timeout=60000, wait_until="networkidle")
+                # 使用120秒超时，等待文档加载完成即可（不需要网络空闲）
+                await self.page.goto(url, timeout=120000, wait_until="domcontentloaded")
 
                 # 导航成功后的人类行为延迟
                 await self._human_like_delay(2.0, 4.0)
@@ -364,14 +364,14 @@ class BrowserManager:
                scroll_count < max_scrolls and
                consecutive_no_new < no_new_data_limit):
 
-            # 滚动页面
+            # 使用真实的PageDown键盘事件滚动（比JavaScript更自然）
             scroll_count += 1
-            await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
+            await self.page.keyboard.press("PageDown")
             time.sleep(scroll_pause)
 
-            # 等待页面加载
+            # 等待页面加载（使用domcontentloaded而不是networkidle）
             try:
-                await self.page.wait_for_load_state('networkidle', timeout=5000)
+                await self.page.wait_for_load_state('domcontentloaded', timeout=5000)
             except:
                 # 如果等待超时，继续执行
                 pass
@@ -482,7 +482,7 @@ class BrowserManager:
             except Exception as e:
                 logger.error(f"响应处理器出错: {e}")
 
-    async def wait_for_load_state(self, state: str = "networkidle", timeout: int = 30000):
+    async def wait_for_load_state(self, state: str = "domcontentloaded", timeout: int = 30000):
         """等待页面加载状态"""
         try:
             await self.page.wait_for_load_state(state, timeout=timeout)
@@ -545,8 +545,8 @@ class BrowserManager:
         try:
             logger.debug("建立Pinterest会话...")
 
-            # 先访问主页
-            await self.page.goto("https://www.pinterest.com/", timeout=60000, wait_until="domcontentloaded")
+            # 先访问主页（使用120秒超时）
+            await self.page.goto("https://www.pinterest.com/", timeout=120000, wait_until="domcontentloaded")
             await self._human_like_delay(2.0, 4.0)  # 默认延迟
 
             # 模拟人类行为

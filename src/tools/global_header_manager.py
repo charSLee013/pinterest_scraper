@@ -84,16 +84,16 @@ class GlobalHeaderManager:
                     logger.debug(f"Headers内容: {list(self._headers.keys())}")
                     
                     # 清理浏览器资源
-                    await session_manager.cleanup()
-                    
+                    await session_manager.close()
+
                     return True
                 else:
                     logger.error("❌ 获取到的Headers为空")
-                    await session_manager.cleanup()
+                    await session_manager.close()
                     return False
             else:
                 logger.error("❌ 浏览器会话初始化失败")
-                await session_manager.cleanup()
+                await session_manager.close()
                 return False
                 
         except Exception as e:
@@ -175,11 +175,11 @@ class GlobalHeaderManager:
             with open(self._cache_path, 'r', encoding='utf-8') as f:
                 cache_data = json.load(f)
             
-            # 检查缓存是否过期（24小时）
+            # 检查缓存是否过期（10分钟）
             current_time = __import__('time').time()
             cache_time = cache_data.get('timestamp', 0)
-            
-            if current_time - cache_time > 24 * 3600:  # 24小时过期
+
+            if current_time - cache_time > 10 * 60:  # 10分钟过期
                 logger.debug("Headers缓存已过期")
                 return False
             

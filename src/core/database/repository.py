@@ -16,6 +16,7 @@ from loguru import logger
 from .base import get_database_session
 from .schema import Pin, DownloadTask, ScrapingSession, CacheMetadata
 from .atomic_saver import AtomicPinSaver
+from .normalizer import PinDataNormalizer
 
 
 class SQLiteRepository:
@@ -252,35 +253,142 @@ class SQLiteRepository:
 
     def load_pins_by_query(self, query: str, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
         """根据查询关键词加载Pin数据
-        
+
         Args:
             query: 搜索关键词
             limit: 限制数量
             offset: 偏移量
-            
+
         Returns:
             Pin数据列表
         """
         try:
             with self._get_session() as session:
                 query_obj = session.query(Pin).filter_by(query=query).order_by(desc(Pin.created_at))
-                
+
                 if limit:
                     query_obj = query_obj.limit(limit)
                 if offset:
                     query_obj = query_obj.offset(offset)
-                
+
                 pins = query_obj.all()
-                
+
                 # 转换为字典格式
                 result = [pin.to_dict() for pin in pins]
                 logger.debug(f"加载Pin数据: {len(result)} 个，查询: {query}")
                 return result
-                
+
         except Exception as e:
             logger.error(f"加载Pin数据失败: {e}")
             return []
-    
+
+    def load_pins_with_images(self, query: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """根据查询关键词加载有图片链接的Pin数据（按创建时间倒序）
+
+        Args:
+            query: 搜索关键词
+            limit: 限制数量
+
+        Returns:
+            有图片链接的Pin数据列表（从新到旧排序）
+        """
+        try:
+            with self._get_session() as session:
+                # 查询条件：largest_image_url不为空 OR image_urls不为空
+                query_obj = session.query(Pin).filter(
+                    and_(
+                        Pin.query == query,
+                        or_(
+                            and_(Pin.largest_image_url.isnot(None), Pin.largest_image_url != ''),
+                            and_(Pin.image_urls.isnot(None), Pin.image_urls != '', Pin.image_urls != '[]')
+                        )
+                    )
+                ).order_by(desc(Pin.created_at))
+
+                if limit:
+                    query_obj = query_obj.limit(limit)
+
+                pins = query_obj.all()
+
+                # 转换为字典格式
+                result = [pin.to_dict() for pin in pins]
+                logger.debug(f"加载有图片Pin数据: {len(result)} 个，查询: {query}")
+                return result
+
+        except Exception as e:
+            logger.error(f"加载有图片Pin数据失败: {e}")
+            return []
+
+    def save_pins_and_get_new_ids(self, pins: List[Dict[str, Any]], query: str, session_id: str) -> List[str]:
+        """批量保存pins并返回真正新增的pin id列表 - 使用标准化流程
+
+        Args:
+            pins: Pin数据列表
+            query: 搜索关键词
+            session_id: 会话ID
+
+        Returns:
+            真正新增到数据库的pin id列表
+        """
+        if not pins:
+            return []
+
+        new_pin_ids = []
+
+        try:
+            # 使用标准化流程批量处理
+            for pin_data in pins:
+                pin_id = pin_data.get('id')
+                if not pin_id:
+                    continue
+
+                # 使用标准化器生成一致的hash
+                try:
+                    normalized_data = PinDataNormalizer.normalize_pin_data(pin_data, query)
+                    pin_hash = normalized_data['pin_hash']
+
+                    # 检查是否已存在（基于标准化hash）
+                    if self._pin_exists_by_hash(pin_hash):
+                        logger.debug(f"Pin已存在，跳过: {pin_id}")
+                        continue
+
+                    # 使用原子化保存器保存
+                    success, error_msg = self.atomic_saver.save_pin_atomic(pin_data, query, session_id)
+
+                    if success:
+                        new_pin_ids.append(pin_id)
+                        logger.debug(f"新增Pin保存成功: {pin_id}")
+                    else:
+                        logger.warning(f"Pin保存失败: {pin_id}, 错误: {error_msg}")
+
+                except Exception as e:
+                    logger.error(f"处理Pin失败: {pin_id}, 错误: {e}")
+                    continue
+
+            logger.debug(f"批量保存Pin完成: {len(new_pin_ids)} 个新增，查询: {query}")
+            return new_pin_ids
+
+        except Exception as e:
+            logger.error(f"批量保存Pin失败: {e}")
+            return []
+
+    def _pin_exists_by_hash(self, pin_hash: str) -> bool:
+        """检查Pin是否已存在（基于hash）
+
+        Args:
+            pin_hash: Pin的hash值
+
+        Returns:
+            是否已存在
+        """
+        try:
+            with self._get_session() as session:
+                existing_pin = session.query(Pin).filter_by(pin_hash=pin_hash).first()
+                return existing_pin is not None
+        except Exception as e:
+            logger.error(f"检查Pin存在性失败: {e}")
+            return False
+
     def get_pin_count_by_query(self, query: str) -> int:
         """获取指定查询的Pin数量
         

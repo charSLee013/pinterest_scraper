@@ -26,21 +26,20 @@ dependencies = [
     "loguru>=0.7.0",
     "python-dotenv>=1.0.0",
     "fake-useragent>=1.4.0",
-
     # 数据库依赖
     "sqlalchemy>=2.0.0",
     "alembic>=1.12.0",
-
     # 异步依赖
     "aiohttp>=3.8.0",
     "aiofiles>=23.2.0",
     "asyncio-throttle>=1.0.2",
-
     # 网络分析模块依赖
     "tldextract>=5.1.0",
-
     # UI和进度显示
     "tqdm>=4.67.1",
+    "psutil>=7.0.0",
+    "tabulate>=0.9.0",
+    "brotli>=1.1.0",
 ]
 
 [project.optional-dependencies]

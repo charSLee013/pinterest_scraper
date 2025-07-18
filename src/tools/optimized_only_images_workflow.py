@@ -2,29 +2,38 @@
 # -*- coding: utf-8 -*-
 
 """
-优化后的--only-images工作流程
+重构后的--only-images工作流程
 
-按照用户指定的逻辑实现三阶段处理：
-1. 实时Base64转换阶段：逐个检查和转换base64编码Pin
-2. 全局Header准备阶段：启动浏览器获取headers并缓存
-3. 智能下载阶段：按需增强Pin数据并下载图片
+实现完全独立的四阶段处理：
+1. 数据库修复与检测阶段：自动检测并修复损坏的数据库文件
+2. Base64编码Pin转换阶段：将base64编码转换为真实Pin ID
+3. Pin详情数据补全阶段：批量获取缺失的Pin详情信息
+4. 图片文件下载阶段：并发下载缺失的图片文件
+
+每个阶段都有独立的数据库连接管理和优雅退出机制。
 """
 
+import os
+import json
+import time
 from typing import Optional, Dict
 from loguru import logger
 
-from .realtime_base64_converter import RealtimeBase64Converter
-from .global_header_manager import GlobalHeaderManager
-from .smart_pin_enhancer import SmartPinEnhancer
-from ..tools.image_downloader import ImageDownloader
+from .stage_manager import WorkflowManager
+from .stage_implementations import (
+    DatabaseRepairStage,
+    Base64ConversionStage,
+    PinEnhancementStage,
+    ImageDownloadStage
+)
 
 
 class OptimizedOnlyImagesWorkflow:
-    """优化后的--only-images工作流程
-    
-    实现用户指定的三阶段处理逻辑
+    """重构后的--only-images工作流程
+
+    实现完全独立的四阶段处理逻辑，确保每个阶段都有独立的连接管理和优雅退出机制
     """
-    
+
     def __init__(self, output_dir: str, max_concurrent: int = 15, proxy: Optional[str] = None):
         """初始化工作流程
 
@@ -37,18 +46,21 @@ class OptimizedOnlyImagesWorkflow:
         self.max_concurrent = max_concurrent
         self.proxy = proxy
 
-        # 初始化各阶段组件 - 使用多核加速的Base64转换器
-        self.base64_converter = RealtimeBase64Converter(output_dir)
-        logger.info(f"🚀 使用多核加速转换器，最大工作线程数: {self.base64_converter.max_workers}")
+        # 创建工作流程管理器
+        self.workflow_manager = WorkflowManager(output_dir)
 
-        self.header_manager = GlobalHeaderManager(output_dir)
-        self.pin_enhancer = SmartPinEnhancer(output_dir)
-        
+        logger.info(f"🚀 初始化重构后的--only-images工作流程")
+        logger.info(f"   - 输出目录: {output_dir}")
+        logger.info(f"   - 最大并发: {max_concurrent}")
+        logger.info(f"   - 代理设置: {proxy or '无'}")
+        logger.info(f"   - 四阶段独立处理模式")
+
         # 工作流程统计
         self.workflow_stats = {
-            "phase1_base64_conversion": {},
-            "phase2_header_preparation": {},
-            "phase3_smart_download": {},
+            "stage1_database_repair": {},
+            "stage2_base64_conversion": {},
+            "stage3_pin_enhancement": {},
+            "stage4_image_download": {},
             "total_execution_time": 0
         }
     
@@ -306,7 +318,7 @@ class SmartImageDownloader:
         return total_stats
     
     async def _download_with_enhancement(self, keyword: str) -> Dict:
-        """使用增强逻辑下载图片
+        """使用增强逻辑下载图片 - 重构为生产者-消费者架构
 
         Args:
             keyword: 关键词
@@ -314,57 +326,151 @@ class SmartImageDownloader:
         Returns:
             下载统计信息
         """
-        logger.info(f"开始智能下载关键词: {keyword}")
+        logger.info(f"开始智能下载关键词: {keyword} (使用生产者-消费者架构)")
 
-        # 获取所有Pin数据
-        from ..core.database.repository import SQLiteRepository
-        repository = SQLiteRepository(keyword=keyword, output_dir=self.output_dir)
+        # 使用新的任务队列管理器
+        from .pin_processing_queue import TaskQueueManager
 
-        pins = repository.load_pins_by_query(keyword, limit=None)
-        logger.info(f"加载了 {len(pins)} 个Pin进行智能下载")
+        # 创建队列管理器
+        queue_manager = TaskQueueManager(
+            max_workers=self.max_concurrent,
+            queue_size=200  # 队列大小，避免内存爆炸
+        )
 
-        download_stats = {
-            "keyword": keyword,
-            "total_pins": len(pins),
-            "enhanced_pins": 0,
-            "downloaded": 0,
-            "failed": 0
-        }
+        try:
+            # 启动生产者-消费者处理
+            stats = await queue_manager.start_processing(
+                keyword=keyword,
+                output_dir=self.output_dir,
+                pin_enhancer=self.pin_enhancer,
+                header_manager=self.header_manager
+            )
 
-        # 重置Pin增强器统计
-        self.pin_enhancer.reset_stats()
+            # 转换统计格式以保持兼容性
+            download_stats = {
+                "keyword": keyword,
+                "total_pins": stats.get("total_pins", 0),
+                "enhanced_pins": stats.get("enhanced_pins", 0),
+                "downloaded": stats.get("downloaded_pins", 0),
+                "failed": stats.get("failed_pins", 0),
+                "processing_time": stats.get("end_time", 0) - stats.get("start_time", 0) if stats.get("end_time") and stats.get("start_time") else 0
+            }
 
-        # 处理每个Pin
-        for i, pin in enumerate(pins, 1):
-            try:
-                logger.debug(f"处理Pin ({i}/{len(pins)}): {pin.get('id', '')}")
+            logger.info(f"生产者-消费者处理完成: {download_stats}")
+            return download_stats
 
-                # 1. 智能Pin增强（如果需要）
-                enhanced_pin = await self.pin_enhancer.enhance_pin_if_needed(pin, keyword)
+        except Exception as e:
+            logger.error(f"生产者-消费者处理失败: {e}")
+            # 返回错误统计
+            return {
+                "keyword": keyword,
+                "total_pins": 0,
+                "enhanced_pins": 0,
+                "downloaded": 0,
+                "failed": 0,
+                "error": str(e)
+            }
+        finally:
+            # 确保资源清理
+            await queue_manager.stop_processing()
 
-                # 2. 检查是否有可下载的图片URL
-                image_urls = self._extract_downloadable_urls(enhanced_pin)
-                if not image_urls:
-                    logger.debug(f"Pin {enhanced_pin.get('id', '')} 没有可下载的图片URL")
+
+
+    async def _download_pin_images(self, pin: Dict, keyword: str, headers: Dict) -> bool:
+        """下载单个Pin的图片
+
+        Args:
+            pin: Pin数据
+            keyword: 关键词
+            headers: HTTP请求头
+
+        Returns:
+            是否下载成功
+        """
+        try:
+            pin_id = pin.get('id', '')
+            if not pin_id:
+                logger.debug("Pin缺少ID，跳过下载")
+                return False
+
+            # 提取可下载的URL
+            image_urls = self._extract_downloadable_urls(pin)
+            if not image_urls:
+                logger.debug(f"Pin {pin_id} 没有可下载的图片URL")
+                return False
+
+            # 创建图片目录
+            images_dir = os.path.join(self.output_dir, keyword, "images")
+            os.makedirs(images_dir, exist_ok=True)
+
+            # 生成文件路径
+            file_extension = "jpg"  # 默认扩展名
+            filename = f"{pin_id}.{file_extension}"
+            output_path = os.path.join(images_dir, filename)
+
+            # 检查文件是否已存在
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                logger.debug(f"图片已存在，跳过下载: {pin_id}")
+                return True
+
+            # 尝试下载第一个可用的URL
+            for url in image_urls:
+                try:
+                    success = await self._download_single_image(url, output_path, headers)
+                    if success:
+                        logger.debug(f"图片下载成功: {pin_id}")
+                        return True
+                except Exception as e:
+                    logger.debug(f"下载URL失败: {url[:100]}... 错误: {e}")
                     continue
 
-                # 3. 使用全局Headers下载图片
-                headers = self.header_manager.get_headers()
+            logger.debug(f"Pin {pin_id} 所有URL都下载失败")
+            return False
 
-                # 这里可以集成实际的图片下载逻辑
-                # 暂时标记为成功
-                download_stats["downloaded"] += 1
+        except Exception as e:
+            logger.error(f"下载Pin图片失败: {pin.get('id', '')}, 错误: {e}")
+            return False
 
-            except Exception as e:
-                logger.error(f"处理Pin {pin.get('id', '')} 失败: {e}")
-                download_stats["failed"] += 1
+    async def _download_single_image(self, url: str, output_path: str, headers: Dict) -> bool:
+        """下载单张图片
 
-        # 获取Pin增强统计
-        enhancement_stats = self.pin_enhancer.get_enhancement_stats()
-        download_stats["enhanced_pins"] = enhancement_stats["pins_enhanced"]
+        Args:
+            url: 图片URL
+            output_path: 输出路径
+            headers: HTTP请求头
 
-        logger.info(f"智能下载完成: {download_stats}")
-        return download_stats
+        Returns:
+            是否下载成功
+        """
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        # 确保目录存在
+                        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+                        # 写入文件
+                        async with aiofiles.open(output_path, 'wb') as f:
+                            async for chunk in response.content.iter_chunked(8192):
+                                await f.write(chunk)
+
+                        # 验证文件大小
+                        if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                            return True
+                        else:
+                            # 删除无效文件
+                            if os.path.exists(output_path):
+                                os.remove(output_path)
+                            return False
+                    else:
+                        logger.debug(f"HTTP错误: {response.status} for {url[:100]}...")
+                        return False
+
+        except Exception as e:
+            logger.debug(f"下载图片异常: {e}")
+            return False
 
     def _extract_downloadable_urls(self, pin: Dict) -> list:
         """提取可下载的图片URL
@@ -386,7 +492,6 @@ class SmartImageDownloader:
         image_urls = pin.get('image_urls', {})
         if isinstance(image_urls, str):
             try:
-                import json
                 image_urls = json.loads(image_urls)
             except:
                 image_urls = {}
@@ -401,7 +506,6 @@ class SmartImageDownloader:
     
     def _discover_all_keywords(self) -> list:
         """发现所有关键词"""
-        import os
         from pathlib import Path
         
         keywords = []

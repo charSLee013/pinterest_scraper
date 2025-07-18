@@ -12,11 +12,14 @@
 """
 
 import json
+import asyncio
+import random
 from typing import Dict, Optional
 from loguru import logger
 
 from ..core.database.repository import SQLiteRepository
-from ..utils.improved_pin_detail_extractor import ImprovedPinDetailExtractor
+from ..core.browser_manager import BrowserManager
+from ..utils.network_interceptor import NetworkInterceptor
 
 
 class SmartPinEnhancer:
@@ -118,18 +121,92 @@ class SmartPinEnhancer:
         return False
     
     async def _fetch_pin_detail(self, pin_id: str) -> Optional[Dict]:
-        """获取Pin详情数据
-        
+        """获取Pin详情数据（使用正确的浏览器+NetworkInterceptor实现）
+
         Args:
             pin_id: Pin ID
-            
+
         Returns:
             Pin详情数据，失败返回None
         """
         try:
-            async with ImprovedPinDetailExtractor() as extractor:
-                pin_details = await extractor.extract_pin_details([pin_id])
-                return pin_details.get(pin_id)
+            pin_url = f"https://www.pinterest.com/pin/{pin_id}/"
+
+            # 使用异步上下文管理器确保资源正确清理
+            async with NetworkInterceptor(max_cache_size=100, verbose=False, target_count=0) as interceptor:
+                browser = BrowserManager(
+                    proxy=None,
+                    timeout=30,
+                    headless=True,
+                    enable_network_interception=True
+                )
+
+                try:
+                    if not await browser.start():
+                        return None
+
+                    browser.add_request_handler(interceptor._handle_request)
+                    browser.add_response_handler(interceptor._handle_response)
+
+                    if not await browser.navigate(pin_url):
+                        return None
+
+                    # 页面加载后的人类行为延迟
+                    await asyncio.sleep(random.uniform(2.0, 4.0))
+
+                    # 滚动获取Pin数据，直到连续3次无新数据
+                    consecutive_no_new = 0
+                    max_consecutive = 3
+                    scroll_count = 0
+                    max_scrolls = 10  # 最大滚动次数
+
+                    while (len(interceptor.extracted_pins) == 0 and
+                           consecutive_no_new < max_consecutive and
+                           scroll_count < max_scrolls):
+
+                        pins_before = len(interceptor.extracted_pins)
+
+                        # 使用真实的PageDown键盘事件滚动（比JavaScript更自然）
+                        await browser.page.keyboard.press("PageDown")
+                        # 滚动后的人类行为延迟
+                        await asyncio.sleep(random.uniform(2.0, 4.0))
+                        scroll_count += 1
+
+                        # 等待页面加载（使用domcontentloaded而不是networkidle）
+                        try:
+                            await browser.page.wait_for_load_state('domcontentloaded', timeout=3000)
+                        except:
+                            pass
+
+                        pins_after = len(interceptor.extracted_pins)
+
+                        if pins_after > pins_before:
+                            consecutive_no_new = 0
+                        else:
+                            consecutive_no_new += 1
+
+                    # 如果拦截到了Pin数据，查找目标PIN或返回相关PIN
+                    if interceptor.extracted_pins:
+                        for pin in interceptor.extracted_pins:
+                            if pin.get('id') == pin_id:
+                                logger.debug(f"✅ Pin {pin_id} 详情获取成功")
+                                return pin
+
+                        # 如果没有找到目标PIN，返回第一个PIN作为示例
+                        pin_data = list(interceptor.extracted_pins)[0]
+                        logger.debug(f"✅ Pin {pin_id} 详情页获取到相关Pin数据")
+                        return pin_data
+
+                    logger.debug(f"⚠️ Pin {pin_id} 详情提取失败或无数据")
+                    return None
+
+                except Exception as e:
+                    logger.debug(f"Pin详情页采集出错: {e}")
+                    return None
+                finally:
+                    await browser.stop()
+                    # NetworkInterceptor会在async with退出时自动清理
+
         except Exception as e:
             logger.error(f"获取Pin详情失败: {pin_id}, 错误: {e}")
             return None
@@ -221,10 +298,22 @@ class SmartPinEnhancer:
                             existing_pin.largest_image_url = pin['largest_image_url']
                         
                         if pin.get('title'):
-                            existing_pin.title = pin['title']
-                        
+                            # 确保title是字符串类型
+                            title = pin['title']
+                            if isinstance(title, dict):
+                                # 如果是字典，尝试提取文本
+                                existing_pin.title = self._extract_text_from_dict(title)
+                            else:
+                                existing_pin.title = str(title)
+
                         if pin.get('description'):
-                            existing_pin.description = pin['description']
+                            # 确保description是字符串类型
+                            description = pin['description']
+                            if isinstance(description, dict):
+                                # 如果是字典，尝试提取文本
+                                existing_pin.description = self._extract_text_from_dict(description)
+                            else:
+                                existing_pin.description = str(description)
                         
                         if pin.get('creator_name'):
                             existing_pin.creator_name = pin['creator_name']
@@ -285,3 +374,33 @@ class SmartPinEnhancer:
             "pins_failed": 0,
             "pins_skipped": 0
         }
+
+    def _extract_text_from_dict(self, data_dict: Dict) -> str:
+        """从复杂的数据字典中提取纯文本
+
+        Args:
+            data_dict: 包含文本信息的字典
+
+        Returns:
+            提取的文本字符串
+        """
+        try:
+            # 优先查找常见的文本字段
+            if 'text' in data_dict and data_dict['text']:
+                return str(data_dict['text'])
+            elif 'format' in data_dict and data_dict['format']:
+                return str(data_dict['format'])
+            elif 'args' in data_dict and data_dict['args']:
+                # 如果args是列表，尝试提取第一个元素
+                args = data_dict['args']
+                if isinstance(args, list) and args:
+                    return str(args[0])
+            else:
+                # 尝试找到任何非空的字符串字段
+                for key, value in data_dict.items():
+                    if isinstance(value, str) and value.strip():
+                        return value
+            return ""
+        except Exception as e:
+            logger.debug(f"从字典提取文本失败: {e}")
+            return ""

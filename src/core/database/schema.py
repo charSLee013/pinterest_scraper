@@ -3,6 +3,7 @@ SQLAlchemy数据库模型定义
 """
 
 import json
+import os
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -148,7 +149,10 @@ class Pin(Base):
         self.raw_data = json.dumps(value) if value else None
     
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式，兼容原有的Pin数据格式"""
+        """转换为字典格式，兼容原有的Pin数据格式
+
+        注意：下载状态检查已移除，应使用文件系统检查替代
+        """
         # 优先使用原始数据，但确保时间字段正确格式化
         if self.raw_data:
             try:
@@ -156,16 +160,14 @@ class Pin(Base):
                 # 确保时间字段正确格式化
                 data['created_at'] = self._format_datetime(self.created_at)
                 data['updated_at'] = self._format_datetime(self.updated_at)
-                # 确保包含下载状态信息
-                data['downloaded'] = any(task.status == 'completed' for task in self.download_tasks)
-                if data['downloaded']:
-                    completed_task = next((task for task in self.download_tasks if task.status == 'completed'), None)
-                    if completed_task:
-                        data['download_path'] = completed_task.local_path
+                # 移除下载状态查询，避免N+1问题
+                # 下载状态应通过文件系统检查确定
+                data['downloaded'] = False  # 默认值，实际状态由调用方通过文件系统检查
+                data['download_path'] = None  # 默认值，实际路径由调用方确定
                 return data
             except (json.JSONDecodeError, TypeError):
                 pass
-        
+
         # 构建基础数据结构
         return {
             'id': self.id,
@@ -185,8 +187,10 @@ class Pin(Base):
             'created_at': self._format_datetime(self.created_at),
             'updated_at': self._format_datetime(self.updated_at),
             'query': self.query,
-            'downloaded': any(task.status == 'completed' for task in self.download_tasks),
-            'download_path': next((task.local_path for task in self.download_tasks if task.status == 'completed'), None)
+            # 移除下载状态查询，避免N+1问题
+            # 下载状态应通过文件系统检查确定
+            'downloaded': False,  # 默认值，实际状态由调用方通过文件系统检查
+            'download_path': None  # 默认值，实际路径由调用方确定
         }
     
     def __repr__(self):
@@ -305,3 +309,50 @@ class CacheMetadata(Base):
     
     def __repr__(self):
         return f"<CacheMetadata(query='{self.query}', pin_count={self.pin_count})>"
+
+
+def check_pin_download_status_filesystem(pin_data: Dict[str, Any], output_dir: str, keyword: str) -> Dict[str, Any]:
+    """基于文件系统检查Pin的下载状态
+
+    Args:
+        pin_data: Pin数据字典
+        output_dir: 输出目录
+        keyword: 关键词
+
+    Returns:
+        包含下载状态的Pin数据字典
+    """
+    # 复制Pin数据，避免修改原始数据
+    result = pin_data.copy()
+
+    # 生成预期的图片文件路径
+    pin_id = pin_data.get('id', '')
+    if not pin_id:
+        result['downloaded'] = False
+        result['download_path'] = None
+        return result
+
+    # 构建图片目录路径
+    images_dir = os.path.join(output_dir, keyword, "images")
+
+    # 尝试多种可能的文件扩展名
+    possible_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif']
+
+    for ext in possible_extensions:
+        image_path = os.path.join(images_dir, f"{pin_id}{ext}")
+
+        if os.path.exists(image_path):
+            try:
+                # 检查文件大小（至少1KB）
+                file_size = os.path.getsize(image_path)
+                if file_size >= 1024:
+                    result['downloaded'] = True
+                    result['download_path'] = image_path
+                    return result
+            except OSError:
+                continue
+
+    # 没有找到有效的图片文件
+    result['downloaded'] = False
+    result['download_path'] = None
+    return result

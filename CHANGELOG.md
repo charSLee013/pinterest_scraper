@@ -1,5 +1,33 @@
 # Pinterest Scraper 更新日志
 
+## v4.1.5 - 第二阶段数据库Hash冲突修复 (2025-07-18)
+
+### 🔥 重大修复
+- **数据库Hash算法统一**: 修复第二阶段UNIQUE constraint failed: pins.pin_hash错误
+- **架构一致性保证**: 第一阶段和第二阶段现在使用统一的标准化数据保存流程
+- **GraphQL数据提取优化**: 完善v3RelatedPinsForPinSeoQuery数据解析和Pin验证逻辑
+
+### 🔧 核心代码修改
+- **repository.py**: save_pins_and_get_new_ids方法重构，使用AtomicPinSaver + PinDataNormalizer
+- **network_interceptor.py**: 修复Pin验证逻辑，支持GraphQL格式的imageSpec_*字段
+- **Hash算法统一**: 两个阶段都使用MD5(JSON({id, title, description, largest_image_url}))
+
+### 🎯 问题根源分析
+- **第一阶段**: 使用复杂hash算法（基于多个字段的JSON字符串MD5）
+- **第二阶段**: 使用简化hash算法（基于pin_id和query的字符串MD5）
+- **冲突机制**: 相同Pin在两个阶段产生不同hash值，导致UNIQUE约束冲突
+
+### ✅ 修复验证
+- **Hash一致性测试**: 验证两阶段hash算法完全一致
+- **冲突预防测试**: 确保不再出现UNIQUE constraint failed错误
+- **真实场景测试**: pin_set从3扩展到7，成功新增6个Pin
+- **GraphQL数据提取**: 成功解析entityId和imageSpec_*字段
+
+### 🚀 性能优化
+- **批量存在性检查**: 保存前先检查Pin是否已存在，避免不必要操作
+- **标准化流程复用**: 利用现有的INSERT OR REPLACE机制处理冲突
+- **资源清理优化**: 完善浏览器和网络资源清理机制
+
 ## v4.1.4 - 进度条逻辑统一修复 (2025-07-15)
 
 ### 🔥 重大修复

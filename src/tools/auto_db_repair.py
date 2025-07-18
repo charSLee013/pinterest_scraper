@@ -19,8 +19,8 @@ import logging
 
 from loguru import logger
 from ..core.database.repository import SQLiteRepository
-# TransactionalPinUpdater已被移除，使用RealtimeBase64Converter替代
-from .realtime_base64_converter import RealtimeBase64Converter
+# 使用新的批量原子Base64转换器
+from .realtime_base64_converter import BatchAtomicBase64Converter
 
 class AutoDatabaseRepairer:
     """自动数据库修复器"""
@@ -50,8 +50,8 @@ class AutoDatabaseRepairer:
             # 创建repository
             repository = SQLiteRepository(keyword=keyword, output_dir=output_dir)
 
-            # 创建Base64转换器
-            converter = RealtimeBase64Converter(output_dir)
+            # 创建批量原子Base64转换器
+            converter = BatchAtomicBase64Converter(output_dir)
 
             # 执行base64 Pin转换
             stats = await converter.process_all_databases(target_keyword=keyword)
