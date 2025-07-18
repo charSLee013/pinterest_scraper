@@ -1,5 +1,32 @@
 # Pinterest Scraper 更新日志
 
+## v4.2.2 - 高并发优化与架构清理 (2025-07-18)
+
+### 🚀 新增功能
+- **高并发下载优化**: 最大并发数从50提升至65536，支持极高并发下载场景
+- **下载接口统一**: 重构ImageDownloader类，提供统一的下载方法调用接口
+- **兼容性增强**: 新增`download_keyword_images`兼容性方法，确保所有调用方正常工作
+
+### 🔧 技术改进
+- **架构清理**: 移除重复和冗余的测试文件，优化项目结构
+- **测试套件优化**: 合并相似功能的测试文件，提供更全面的测试覆盖
+  - 合并中断机制测试 → `test_interrupt_mechanism_comprehensive.py`
+  - 合并修复验证测试 → `test_comprehensive_fix_verification.py`
+  - 合并进度条测试 → `test_progress_bar_comprehensive.py`
+- **文档更新**: 更新README.md和项目配置，反映新的并发限制和功能
+
+### 🐛 问题修复
+- **修复AttributeError**: 解决`'ImageDownloader' object has no attribute 'download_keyword_images'`错误
+- **接口一致性**: 统一下载方法的返回格式，确保调用方兼容性
+- **参数验证**: 更新并发数验证逻辑，支持1-65536范围
+
+### 📝 代码质量
+- **清理无效文件**: 移除项目中的临时文件和压缩包
+- **优化.gitignore**: 添加.7z文件类型到忽略列表
+- **测试覆盖**: 提供完整的单元测试和集成测试覆盖
+
+---
+
 ## v4.1.5 - 第二阶段数据库Hash冲突修复 (2025-07-18)
 
 ### 🔥 重大修复

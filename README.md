@@ -1,6 +1,15 @@
-# Pinterest Scraper v4.2.1 - 数据库架构统一版
+# Pinterest Scraper v4.2.2 - 高并发优化版
 
 🎯 **工业级Pinterest数据采集工具** - 突破反爬虫限制，支持断点续传，实现高速下载，专为恶劣环境设计
+
+## 🆕 v4.2.2 新增功能
+
+### 🚀 高并发下载优化 (v4.2.2)
+- **并发限制提升**: 最大并发数从50提升至65536，支持极高并发下载
+- **下载接口统一**: 重构ImageDownloader接口，提供统一的下载方法调用
+- **兼容性增强**: 新增兼容性接口，确保所有调用方正常工作
+- **测试套件优化**: 合并重复测试文件，提供更全面的测试覆盖
+- **架构清理**: 移除冗余代码，优化项目结构
 
 ## 🆕 v4.2.1 新增功能
 
@@ -162,6 +171,13 @@ python main.py --only-images
 
 # 带详细日志的图片下载
 python main.py --only-images --query "nature photography" --verbose
+
+# 高并发下载（适合网络条件好的环境）
+python main.py --only-images --max-concurrent 100
+python main.py --only-images -j 200  # 使用短参数
+
+# 低并发下载（适合网络不稳定的环境）
+python main.py --only-images --max-concurrent 5
 
 # 输出示例：
 # 开始下载关键词图片: cats

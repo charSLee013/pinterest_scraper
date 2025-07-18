@@ -49,7 +49,7 @@ def create_parser() -> argparse.ArgumentParser:
   python main.py --query "landscape" --count 2000 --max-concurrent 30
   python main.py --query "cats" --count 100 --no-images  # 仅采集数据，不下载图片
   python main.py --only-images --query "cats"  # 仅下载cats关键词的缺失图片
-  python main.py --only-images --max-concurrent 25  # 下载所有关键词，高并发
+  python main.py --only-images --max-concurrent 100  # 下载所有关键词，高并发
   python main.py --only-images -j 5  # 下载所有关键词，低并发（网络慢时）
         """
     )
@@ -107,7 +107,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--max-concurrent", "--max-workers", "-j",
         type=int,
         default=15,
-        help="最大并发下载数 (默认: 15，范围: 1-50)"
+        help="最大并发下载数 (默认: 15，范围: 1-65536)"
     )
 
     return parser
@@ -118,9 +118,9 @@ def validate_concurrent_value(value: int) -> int:
     if value < 1:
         logger.warning(f"并发数过小 ({value})，设置为1")
         return 1
-    elif value > 50:
-        logger.warning(f"并发数过大 ({value})，设置为50")
-        return 50
+    elif value > 65536:
+        logger.warning(f"并发数过大 ({value})，设置为65536")
+        return 65536
     return value
 
 

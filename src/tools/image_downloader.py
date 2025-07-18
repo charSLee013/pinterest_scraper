@@ -774,7 +774,7 @@ class ImageDownloader:
             keyword: 关键词
 
         Returns:
-            下载统计结果
+            下载统计结果: {'downloaded': int, 'failed': int, 'skipped': int}
         """
         # 发现数据库
         databases = self.discover_keyword_databases(keyword)
@@ -816,6 +816,41 @@ class ImageDownloader:
             'failed': failed_count,
             'skipped': 0
         }
+
+    async def download_keyword_images(self, keyword: str) -> List[Tuple[bool, str]]:
+        """兼容性接口：下载指定关键词的图片
+
+        这是 download_missing_images_for_keyword 的兼容性包装器，
+        返回格式适配现有调用方的期望。
+
+        Args:
+            keyword: 关键词
+
+        Returns:
+            List[Tuple[bool, str]]: [(成功标志, 错误信息), ...]
+
+        Note:
+            这个方法是为了保持与现有调用方的兼容性而添加的。
+            推荐使用 download_missing_images_for_keyword 方法获取详细统计信息。
+        """
+        logger.debug(f"使用兼容性接口下载关键词图片: {keyword}")
+
+        # 调用核心逻辑
+        stats = await self.download_missing_images_for_keyword(keyword)
+
+        # 转换返回格式以兼容现有调用方
+        results = []
+        downloaded = stats.get('downloaded', 0)
+        failed = stats.get('failed', 0)
+
+        # 生成兼容的结果列表
+        for _ in range(downloaded):
+            results.append((True, "下载成功"))
+        for _ in range(failed):
+            results.append((False, "下载失败"))
+
+        logger.debug(f"兼容性接口返回: {len(results)} 个结果 (成功: {downloaded}, 失败: {failed})")
+        return results
     
     async def download_all_missing_images(self) -> Dict:
         """下载所有关键词的缺失图片

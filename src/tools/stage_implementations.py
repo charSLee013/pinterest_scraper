@@ -698,7 +698,7 @@ class PinEnhancementStage(StageManager):
 
     def _validate_concurrent_setup(self) -> bool:
         """验证并发设置是否正确"""
-        if self.max_concurrent < 1 or self.max_concurrent > 50:
+        if self.max_concurrent < 1 or self.max_concurrent > 65536:
             logger.error(f"无效的并发数: {self.max_concurrent}")
             return False
 
@@ -708,6 +708,10 @@ class PinEnhancementStage(StageManager):
             available_memory = psutil.virtual_memory().available / (1024**3)  # GB
             if available_memory < 1.0:
                 logger.warning(f"可用内存较低: {available_memory:.1f}GB")
+
+            # 高并发时的内存警告
+            if self.max_concurrent > 1000:
+                logger.warning(f"使用高并发数 ({self.max_concurrent})，请确保有足够的系统资源")
         except ImportError:
             logger.debug("psutil未安装，跳过内存检查")
 
