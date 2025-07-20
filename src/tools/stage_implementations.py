@@ -741,74 +741,446 @@ class PinEnhancementStage(StageManager):
 
 
 class ImageDownloadStage(StageManager):
-    """阶段4：图片文件下载"""
-    
-    def __init__(self, output_dir: str, max_concurrent: int = 15):
+    """阶段4：图片文件下载 - 重构版
+
+    实现清晰的5步循环逻辑：
+    1. 创建已下载图片pin集合
+    2. 翻页批量读取待下载pins
+    3. 检查/获取headers
+    4. 多线程下载图片（重试机制+单点错误容忍）
+    5. 检查本地文件并更新全局计数
+    重复步骤2-5直到完成
+    """
+
+    def __init__(self, output_dir: str, max_concurrent: int = 15, batch_size: Optional[int] = None):
         super().__init__("图片文件下载", output_dir)
         self.max_concurrent = max_concurrent
-    
+        # batch_size应该等于max_concurrent，确保最优的资源利用
+        self.batch_size = batch_size if batch_size is not None else max_concurrent
+        self.global_header_manager = None
+
+        logger.debug(f"ImageDownloadStage初始化: max_concurrent={self.max_concurrent}, batch_size={self.batch_size}")
+
     async def _execute_stage(self, target_keyword: Optional[str] = None) -> Dict[str, Any]:
-        """执行图片文件下载"""
-        logger.info("📥 开始图片文件下载阶段")
-        
-        # 创建独立的下载器
-        from .image_downloader import ImageDownloader
-        downloader = ImageDownloader(
-            output_dir=self.output_dir,
-            max_concurrent=self.max_concurrent,
-            prefer_requests=True
-        )
-        
+        """执行图片文件下载 - 5步循环逻辑实现"""
+        logger.info("📥 开始图片文件下载阶段 - 5步循环逻辑")
+        logger.info("=" * 60)
+        logger.info("步骤1: 创建已下载图片pin集合")
+        logger.info("步骤2: 翻页批量读取待下载pins")
+        logger.info("步骤3: 检查/获取headers")
+        logger.info("步骤4: 多线程下载图片（重试+容错）")
+        logger.info("步骤5: 检查本地文件并更新全局计数")
+        logger.info("=" * 60)
+
+        # 初始化全局Header管理器
+        from .global_header_manager import GlobalHeaderManager
+        self.global_header_manager = GlobalHeaderManager(self.output_dir)
+
         # 发现需要处理的关键词
         if target_keyword:
             keywords = [target_keyword]
         else:
             keywords = self._discover_all_keywords()
-        
+
+        # 全局统计
         download_stats = {
             "keywords_processed": 0,
             "total_downloaded": 0,
             "total_failed": 0,
+            "total_batches": 0,
             "keyword_details": {}
         }
-        
+
+        # 为每个关键词执行5步循环逻辑
         for keyword in keywords:
-            # 检查中断状态并在必要时抛出KeyboardInterrupt
             self.check_interruption_and_raise()
 
-            logger.info(f"📥 下载关键词图片: {keyword}")
+            logger.info(f"🎯 开始处理关键词: {keyword}")
+            keyword_stats = await self._process_keyword_with_5_steps(keyword)
+
+            # 更新全局统计
             download_stats["keywords_processed"] += 1
-            
-            try:
-                # 执行关键词图片下载
-                keyword_results = await downloader.download_keyword_images(keyword)
-                
-                # 统计结果
-                downloaded = sum(1 for success, _ in keyword_results if success)
-                failed = sum(1 for success, _ in keyword_results if not success)
-                
-                download_stats["total_downloaded"] += downloaded
-                download_stats["total_failed"] += failed
-                download_stats["keyword_details"][keyword] = {
-                    "downloaded": downloaded,
-                    "failed": failed,
-                    "total": len(keyword_results)
-                }
-                
-                logger.info(f"✅ 关键词 {keyword}: 下载 {downloaded} 成功, {failed} 失败")
-                
-            except Exception as e:
-                logger.error(f"❌ 下载关键词 {keyword} 图片时出错: {e}")
-                download_stats["keyword_details"][keyword] = {
-                    "error": str(e)
-                }
-        
-        # 清理下载器资源
-        await downloader.close()
-        
-        logger.info(f"📥 图片下载完成: {download_stats}")
+            download_stats["total_downloaded"] += keyword_stats["downloaded"]
+            download_stats["total_failed"] += keyword_stats["failed"]
+            download_stats["total_batches"] += keyword_stats["batches"]
+            download_stats["keyword_details"][keyword] = keyword_stats
+
+            logger.info(f"✅ 关键词 {keyword} 完成: 下载 {keyword_stats['downloaded']} 成功, {keyword_stats['failed']} 失败")
+
+        logger.info(f"📥 图片下载阶段完成: {download_stats}")
         return self._generate_success_result({"download_stats": download_stats})
-    
+
+    async def _process_keyword_with_5_steps(self, keyword: str) -> Dict[str, Any]:
+        """为单个关键词执行5步循环逻辑
+
+        Args:
+            keyword: 关键词
+
+        Returns:
+            关键词处理统计结果
+        """
+        from ..core.database.repository import SQLiteRepository
+        import os
+        from tqdm import tqdm
+
+        # 初始化统计
+        keyword_stats = {
+            "downloaded": 0,
+            "failed": 0,
+            "batches": 0,
+            "total_pins_with_images": 0,
+            "already_downloaded": 0
+        }
+
+        try:
+            # 创建Repository
+            repository = SQLiteRepository(keyword=keyword, output_dir=self.output_dir)
+            images_dir = os.path.join(self.output_dir, keyword, "images")
+            os.makedirs(images_dir, exist_ok=True)
+
+            # 【步骤1】创建已下载图片pin集合
+            logger.info(f"📋 步骤1: 创建已下载图片pin集合 - {keyword}")
+            downloaded_pins_set = self._build_downloaded_pins_set(images_dir)
+            keyword_stats["already_downloaded"] = len(downloaded_pins_set)
+            logger.info(f"   已下载图片: {len(downloaded_pins_set)} 个")
+
+            # 获取总数用于进度条
+            total_pins = self._get_total_pins_with_images(repository, keyword)
+            keyword_stats["total_pins_with_images"] = total_pins
+            logger.info(f"   数据库中有图片URL的Pin总数: {total_pins} 个")
+
+            if total_pins == 0:
+                logger.info(f"   关键词 {keyword} 没有发现有图片URL的Pin，跳过")
+                return keyword_stats
+
+            # 初始化翻页参数
+            offset = 0
+            batch_count = 0
+
+            # 创建进度条
+            with tqdm(total=total_pins, desc=f"下载 {keyword}", unit="pin") as pbar:
+                # 更新已下载的进度
+                pbar.update(len(downloaded_pins_set))
+
+                # 【主循环】重复步骤2-5直到完成
+                while True:
+                    self.check_interruption_and_raise()
+
+                    # 【步骤2】翻页批量读取待下载pins
+                    logger.debug(f"📖 步骤2: 翻页读取待下载pins (offset: {offset}, batch: {self.batch_size})")
+                    pins_batch = repository.load_pins_with_images(
+                        keyword,
+                        limit=self.batch_size,
+                        offset=offset
+                    )
+
+                    if not pins_batch:
+                        logger.info(f"   没有更多Pin数据，翻页完成")
+                        break
+
+                    # 过滤已下载的pins
+                    missing_pins = [pin for pin in pins_batch if pin['id'] not in downloaded_pins_set]
+                    logger.debug(f"   本批次: {len(pins_batch)} 个Pin，待下载: {len(missing_pins)} 个")
+
+                    if not missing_pins:
+                        logger.debug(f"   本批次无待下载Pin，跳到下一批次")
+                        offset += len(pins_batch)
+                        continue
+
+                    # 【步骤3】检查/获取headers
+                    logger.debug(f"🌐 步骤3: 检查/获取headers")
+                    headers_ready = await self._ensure_headers_ready()
+                    if not headers_ready:
+                        logger.warning(f"   Headers获取失败，使用默认headers")
+
+                    # 【步骤4】多线程下载图片
+                    logger.debug(f"⬇️ 步骤4: 多线程下载 {len(missing_pins)} 个图片")
+                    batch_results = await self._download_batch_with_retry(missing_pins, keyword, images_dir)
+
+                    # 【步骤5】检查本地文件并更新全局计数
+                    logger.debug(f"✅ 步骤5: 检查文件并更新计数")
+                    batch_downloaded, batch_failed = self._verify_and_update_stats(batch_results, downloaded_pins_set)
+
+                    # 更新统计
+                    keyword_stats["downloaded"] += batch_downloaded
+                    keyword_stats["failed"] += batch_failed
+                    keyword_stats["batches"] += 1
+                    batch_count += 1
+
+                    # 更新进度条
+                    pbar.update(batch_downloaded)
+
+                    logger.debug(f"   批次 {batch_count} 完成: {batch_downloaded}/{len(missing_pins)} 成功")
+
+                    # 更新偏移量
+                    offset += len(pins_batch)
+
+                    # 如果返回的Pin数量少于批次大小，说明已到末尾
+                    if len(pins_batch) < self.batch_size:
+                        logger.info(f"   已处理完所有Pin，翻页结束")
+                        break
+
+            logger.info(f"🎯 关键词 {keyword} 处理完成: 总批次 {batch_count}, 下载 {keyword_stats['downloaded']} 成功")
+            return keyword_stats
+
+        except Exception as e:
+            logger.error(f"❌ 处理关键词 {keyword} 时出错: {e}")
+            keyword_stats["error"] = str(e)
+            return keyword_stats
+
+    def _build_downloaded_pins_set(self, images_dir: str) -> set:
+        """【步骤1】建立已下载图片的Pin索引集合
+
+        Args:
+            images_dir: 图片目录路径
+
+        Returns:
+            已下载图片的Pin ID集合
+        """
+        downloaded_pins = set()
+
+        if not os.path.exists(images_dir):
+            logger.debug(f"图片目录不存在: {images_dir}")
+            return downloaded_pins
+
+        try:
+            # 扫描images目录，提取已下载的pin_id
+            for filename in os.listdir(images_dir):
+                if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                    # 从文件名提取Pin ID（去掉扩展名）
+                    pin_id = os.path.splitext(filename)[0]
+                    # 验证文件有效性（大小检查）
+                    file_path = os.path.join(images_dir, filename)
+                    if os.path.getsize(file_path) > 1000:  # 至少1KB
+                        downloaded_pins.add(pin_id)
+                    else:
+                        logger.debug(f"发现无效图片文件: {filename} (大小: {os.path.getsize(file_path)} bytes)")
+
+            logger.debug(f"建立已下载索引: {len(downloaded_pins)} 个有效文件")
+
+        except Exception as e:
+            logger.error(f"建立已下载索引失败: {e}")
+
+        return downloaded_pins
+
+    def _get_total_pins_with_images(self, repository, keyword: str) -> int:
+        """获取有图片URL的Pin总数"""
+        try:
+            all_pins = repository.load_pins_with_images(keyword)
+            return len(all_pins)
+        except Exception as e:
+            logger.error(f"获取Pin总数失败: {e}")
+            return 0
+
+    async def _ensure_headers_ready(self) -> bool:
+        """【步骤3】确保Headers已准备就绪
+
+        Returns:
+            是否成功获取Headers
+        """
+        try:
+            if self.global_header_manager:
+                return await self.global_header_manager.ensure_headers_ready()
+            else:
+                logger.warning("GlobalHeaderManager未初始化")
+                return False
+        except Exception as e:
+            logger.error(f"Headers准备失败: {e}")
+            return False
+
+    async def _download_batch_with_retry(self, pins_batch: List[Dict], keyword: str, images_dir: str) -> List[Dict]:
+        """【步骤4】多线程下载图片批次（带重试机制和单点错误容忍）
+
+        Args:
+            pins_batch: Pin数据批次
+            keyword: 关键词
+            images_dir: 图片目录
+
+        Returns:
+            下载结果列表，每个元素包含 {'pin_id': str, 'success': bool, 'message': str, 'file_path': str}
+        """
+        import asyncio
+        import concurrent.futures
+        from concurrent.futures import ThreadPoolExecutor
+
+        # 获取headers
+        headers = self.global_header_manager.get_headers() if self.global_header_manager else {}
+
+        # 创建下载任务
+        download_tasks = []
+        for pin in pins_batch:
+            pin_id = pin.get('id')
+            if not pin_id:
+                continue
+
+            # 提取图片URLs
+            image_urls = self._extract_image_urls(pin)
+            if not image_urls:
+                continue
+
+            # 生成文件路径
+            file_path = os.path.join(images_dir, f"{pin_id}.jpg")
+
+            download_tasks.append({
+                'pin_id': pin_id,
+                'image_urls': image_urls,
+                'file_path': file_path,
+                'headers': headers.copy()
+            })
+
+        # 使用线程池进行多线程下载
+        results = []
+        max_workers = min(self.max_concurrent, len(download_tasks))
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有下载任务
+            future_to_task = {
+                executor.submit(self._download_single_pin_sync, task): task
+                for task in download_tasks
+            }
+
+            # 收集结果（单点错误容忍）
+            for future in concurrent.futures.as_completed(future_to_task):
+                task = future_to_task[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    # 单点错误容忍：单个pin下载失败不影响其他pin
+                    logger.debug(f"Pin {task['pin_id']} 下载异常: {e}")
+                    results.append({
+                        'pin_id': task['pin_id'],
+                        'success': False,
+                        'message': f"下载异常: {e}",
+                        'file_path': task['file_path']
+                    })
+
+        return results
+
+    def _download_single_pin_sync(self, task: Dict) -> Dict:
+        """同步下载单个Pin的图片（带重试机制）
+
+        Args:
+            task: 下载任务，包含pin_id, image_urls, file_path, headers
+
+        Returns:
+            下载结果字典
+        """
+        pin_id = task['pin_id']
+        image_urls = task['image_urls']
+        file_path = task['file_path']
+        headers = task['headers']
+
+        # 检查文件是否已存在
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 1000:
+            return {
+                'pin_id': pin_id,
+                'success': True,
+                'message': "文件已存在",
+                'file_path': file_path
+            }
+
+        # 尝试下载每个URL（重试机制）
+        max_retries = 3
+        for i, url in enumerate(image_urls):
+            for retry in range(max_retries):
+                try:
+                    # 使用现有的下载函数
+                    from ..utils.downloader import download_image
+                    success = download_image(url, file_path, headers, timeout=30, max_retries=1)
+
+                    if success and os.path.exists(file_path) and os.path.getsize(file_path) > 1000:
+                        return {
+                            'pin_id': pin_id,
+                            'success': True,
+                            'message': f"下载成功 (URL {i+1}, 重试 {retry+1})",
+                            'file_path': file_path
+                        }
+
+                except Exception as e:
+                    logger.debug(f"Pin {pin_id} URL {i+1} 重试 {retry+1} 失败: {e}")
+
+                # 重试间隔
+                if retry < max_retries - 1:
+                    import time
+                    time.sleep(0.5 * (retry + 1))  # 递增延迟
+
+        return {
+            'pin_id': pin_id,
+            'success': False,
+            'message': f"所有URL都下载失败 ({len(image_urls)} 个尝试)",
+            'file_path': file_path
+        }
+
+    def _verify_and_update_stats(self, batch_results: List[Dict], downloaded_pins_set: set) -> tuple:
+        """【步骤5】检查本地文件并更新全局计数
+
+        Args:
+            batch_results: 批次下载结果
+            downloaded_pins_set: 已下载pins集合（会被更新）
+
+        Returns:
+            (成功数量, 失败数量)
+        """
+        downloaded_count = 0
+        failed_count = 0
+
+        for result in batch_results:
+            pin_id = result['pin_id']
+            success = result['success']
+            file_path = result['file_path']
+
+            if success:
+                # 验证文件确实存在且有效
+                if os.path.exists(file_path) and os.path.getsize(file_path) > 1000:
+                    downloaded_count += 1
+                    downloaded_pins_set.add(pin_id)  # 更新已下载集合
+                    logger.debug(f"✅ Pin {pin_id} 下载成功并验证")
+                else:
+                    failed_count += 1
+                    logger.debug(f"❌ Pin {pin_id} 下载报告成功但文件无效")
+            else:
+                failed_count += 1
+                logger.debug(f"❌ Pin {pin_id} 下载失败: {result['message']}")
+
+        return downloaded_count, failed_count
+
+    def _extract_image_urls(self, pin: Dict) -> List[str]:
+        """从Pin数据中提取图片URLs
+
+        Args:
+            pin: Pin数据字典
+
+        Returns:
+            图片URL列表，按优先级排序
+        """
+        urls = []
+
+        # 优先使用largest_image_url
+        largest_url = pin.get('largest_image_url')
+        if largest_url and largest_url.startswith('http'):
+            urls.append(largest_url)
+
+        # 解析image_urls JSON
+        image_urls_json = pin.get('image_urls')
+        if image_urls_json:
+            try:
+                import json
+                image_urls_dict = json.loads(image_urls_json) if isinstance(image_urls_json, str) else image_urls_json
+
+                # 按优先级顺序提取URL
+                size_priorities = ["original", "1200", "736", "564", "474", "236", "170"]
+                for size in size_priorities:
+                    if size in image_urls_dict:
+                        url = image_urls_dict[size]
+                        if url and url.startswith('http') and url not in urls:
+                            urls.append(url)
+
+            except Exception as e:
+                logger.debug(f"解析image_urls失败: {e}")
+
+        return urls
+
     async def _verify_stage_completion(self) -> bool:
         """验证图片下载阶段完整性"""
         # 可以检查关键图片文件是否存在

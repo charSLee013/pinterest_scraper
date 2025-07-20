@@ -37,19 +37,19 @@ class RefactoredOnlyImagesWorkflow:
 
         Args:
             output_dir: 输出目录
-            max_concurrent: 最大并发数
+            max_concurrent: 最大并发数（同时也是批次大小）
             proxy: 代理设置
         """
         self.output_dir = output_dir
         self.max_concurrent = max_concurrent
         self.proxy = proxy
-        
+
         # 创建工作流程管理器
         self.workflow_manager = WorkflowManager(output_dir)
-        
+
         logger.info(f"🚀 初始化重构后的--only-images工作流程")
         logger.info(f"   - 输出目录: {output_dir}")
-        logger.info(f"   - 最大并发: {max_concurrent}")
+        logger.info(f"   - 最大并发: {max_concurrent} (批次大小自动等于并发数)")
         logger.info(f"   - 代理设置: {proxy or '无'}")
         logger.info(f"   - 四阶段独立处理模式")
         

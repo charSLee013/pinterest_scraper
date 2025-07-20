@@ -196,16 +196,41 @@ await scraper.scrape(query="cats", count=100)  # 第一次
 await scraper.scrape(query="cats", count=500)  # 增量采集400个
 ```
 
+## --only-images 工作流程架构
+
+### 四阶段处理流程
+1. **数据库修复与检测阶段**: 自动检测并修复损坏的数据库文件
+2. **Base64编码Pin转换阶段**: 将base64编码转换为真实Pin ID
+3. **Pin详情数据补全阶段**: 批量获取缺失的Pin详情信息
+4. **图片文件下载阶段**: 5步循环逻辑高效下载
+
+### 第4阶段：5步循环逻辑
+```
+步骤1: 创建已下载图片pin集合
+步骤2: 翻页批量读取待下载pins
+步骤3: 检查/获取headers
+步骤4: 多线程下载图片（重试+容错）
+步骤5: 检查本地文件并更新全局计数
+重复步骤2-5直到完成
+```
+
+### 批次大小优化
+- **batch_size = max_concurrent**: 批次大小自动等于并发数
+- **资源利用率**: 100%（无线程空闲，无Pin等待）
+- **性能优化**: 避免批次大小不匹配导致的性能波动
+
 ## 故障排除
 
 ### 1. 常见问题
 - **内存不足**: v4.0已解决，支持大规模采集
 - **数据丢失**: 实时保存机制确保零数据丢失
 - **重复数据**: 数据库UPSERT机制自动去重
+- **下载速度慢**: 调整 `--max-concurrent` 参数优化并发数
 
 ### 2. 调试模式
 ```bash
 uv run python main.py -q "test" -c 10 --debug
+uv run python main.py --only-images --max-concurrent 30 --verbose
 ```
 
 ### 3. 数据库检查

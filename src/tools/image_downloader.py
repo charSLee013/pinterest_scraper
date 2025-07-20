@@ -720,6 +720,7 @@ class ImageDownloader:
     async def _download_images_concurrently(self, missing_tasks: List[Dict], keyword: str) -> List[Tuple[bool, str]]:
         """异步并发下载图片"""
         semaphore = asyncio.Semaphore(self.max_concurrent)
+        tasks = []
 
         async def download_with_semaphore(task):
             async with semaphore:
@@ -731,26 +732,33 @@ class ImageDownloader:
                     task
                 )
 
-        # 创建并发任务
-        tasks = [download_with_semaphore(task) for task in missing_tasks]
+        try:
+            # 创建并发任务
+            tasks = [download_with_semaphore(task) for task in missing_tasks]
 
-        # 使用tqdm显示进度
-        results = []
-        with tqdm(total=len(tasks), desc=f"下载 {keyword}", unit="img") as pbar:
-            for coro in asyncio.as_completed(tasks):
-                result = await coro
-                results.append(result)
+            # 使用tqdm显示进度
+            results = []
+            with tqdm(total=len(tasks), desc=f"下载 {keyword}", unit="img") as pbar:
+                for coro in asyncio.as_completed(tasks):
+                    result = await coro
+                    results.append(result)
 
-                # 更新进度条
-                success, message = result
-                if success:
-                    logger.debug(f"下载成功: {message}")
-                else:
-                    logger.debug(f"下载失败: {message}")
+                    # 更新进度条
+                    success, message = result
+                    if success:
+                        logger.debug(f"下载成功: {message}")
+                    else:
+                        logger.debug(f"下载失败: {message}")
 
-                pbar.update(1)
+                    pbar.update(1)
 
-        return results
+            return results
+
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            # 中断时直接退出，不管pending的任务
+            logger.warning(f"下载被中断，直接退出程序")
+            import os
+            os._exit(0)  # 强制退出，不执行清理
 
     async def close(self):
         """清理资源 - 改进版本"""
@@ -887,3 +895,310 @@ class ImageDownloader:
                 total_stats['failed'] += 1
         
         return total_stats
+
+
+class ImageDownloadProducer:
+    """图片下载分页生产者 - 基于PinDataProducer模式"""
+
+    def __init__(self, repository: SQLiteRepository, keyword: str, images_dir: str, page_size: int = 500):
+        """初始化图片下载生产者
+
+        Args:
+            repository: 数据库Repository
+            keyword: 关键词
+            images_dir: 图片目录路径
+            page_size: 每页大小
+        """
+        self.repository = repository
+        self.keyword = keyword
+        self.images_dir = images_dir
+        self.page_size = page_size
+        self.total_count = None
+        self.current_offset = 0
+        self.finished = False
+        self.downloaded_cache = self._build_downloaded_index()
+
+    def _build_downloaded_index(self) -> set:
+        """建立已下载图片的Pin索引缓存
+
+        Returns:
+            已下载图片的Pin ID集合
+        """
+        downloaded_pins = set()
+
+        if not os.path.exists(self.images_dir):
+            logger.debug(f"图片目录不存在: {self.images_dir}")
+            return downloaded_pins
+
+        try:
+            # 扫描images目录，提取已下载的pin_id
+            for filename in os.listdir(self.images_dir):
+                if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                    # 从文件名提取Pin ID（去掉扩展名）
+                    pin_id = os.path.splitext(filename)[0]
+                    downloaded_pins.add(pin_id)
+
+            logger.debug(f"建立已下载索引: {len(downloaded_pins)} 个文件，关键词: {self.keyword}")
+
+        except Exception as e:
+            logger.error(f"建立已下载索引失败: {e}")
+
+        return downloaded_pins
+
+    def get_total_pins_with_images(self) -> int:
+        """获取有图片URL的Pin总数"""
+        if self.total_count is None:
+            try:
+                # 使用Repository查询有图片的Pin总数
+                all_pins = self.repository.load_pins_with_images(self.keyword)
+                self.total_count = len(all_pins)
+            except Exception as e:
+                logger.error(f"获取Pin总数失败: {e}")
+                self.total_count = 0
+
+        return self.total_count
+
+    async def produce_missing_pins(self, queue: asyncio.Queue) -> int:
+        """生产缺失图片的Pin数据到队列
+
+        Args:
+            queue: 任务队列
+
+        Returns:
+            生产的缺失Pin数量
+        """
+        total_produced = 0
+
+        logger.info(f"开始生产缺失图片Pin: {self.keyword}, 已下载: {len(self.downloaded_cache)}")
+
+        while not self.finished:
+            # 分页加载有图片URL的Pin数据
+            pins = self.repository.load_pins_with_images(
+                self.keyword,
+                limit=self.page_size,
+                offset=self.current_offset
+            )
+
+            if not pins:
+                # 没有更多数据
+                self.finished = True
+                break
+
+            # 过滤已下载的pins
+            missing_pins = [pin for pin in pins if pin['id'] not in self.downloaded_cache]
+
+            # 将缺失的Pin添加到队列
+            for pin in missing_pins:
+                await queue.put(pin)
+                total_produced += 1
+
+            logger.debug(f"生产了 {len(missing_pins)}/{len(pins)} 个缺失Pin (offset: {self.current_offset})")
+
+            # 更新偏移量
+            self.current_offset += len(pins)
+
+            # 如果返回的Pin数量少于页面大小，说明已经到达末尾
+            if len(pins) < self.page_size:
+                self.finished = True
+                break
+
+        logger.info(f"缺失Pin生产完成: {total_produced} 个Pin")
+        return total_produced
+
+
+class BatchImageDownloader:
+    """批量图片下载器 - 实现批量并发下载逻辑"""
+
+    def __init__(self, image_downloader: 'ImageDownloader', batch_size: int = 500):
+        """初始化批量图片下载器
+
+        Args:
+            image_downloader: ImageDownloader实例
+            batch_size: 批次大小
+        """
+        self.image_downloader = image_downloader
+        self.batch_size = batch_size
+        self.semaphore = asyncio.Semaphore(image_downloader.max_concurrent)
+
+    async def _process_batches_atomic(self, keyword: str) -> Dict:
+        """批量原子处理关键词的图片下载
+
+        Args:
+            keyword: 关键词
+
+        Returns:
+            下载统计结果
+        """
+        stats = {
+            'downloaded': 0,
+            'failed': 0,
+            'skipped': 0,
+            'total_batches': 0,
+            'keyword': keyword
+        }
+
+        try:
+            # 创建Repository和图片目录路径
+            repository = SQLiteRepository(keyword=keyword, output_dir=self.image_downloader.output_dir)
+            images_dir = os.path.join(self.image_downloader.output_dir, keyword, "images")
+            os.makedirs(images_dir, exist_ok=True)
+
+            # 创建ImageDownloadProducer
+            producer = ImageDownloadProducer(repository, keyword, images_dir, self.batch_size)
+            total_pins_with_images = producer.get_total_pins_with_images()
+
+            if total_pins_with_images == 0:
+                logger.info(f"关键词 {keyword}: 没有发现有图片URL的Pin")
+                return stats
+
+            logger.info(f"关键词 {keyword}: 发现 {total_pins_with_images} 个有图片URL的Pin")
+            logger.info(f"关键词 {keyword}: 已下载 {len(producer.downloaded_cache)} 个图片")
+
+            # 创建任务队列
+            queue = asyncio.Queue(maxsize=self.batch_size * 2)  # 缓冲区大小
+
+            # 启动生产者任务
+            producer_task = asyncio.create_task(producer.produce_missing_pins(queue))
+
+            # 批量处理下载
+            batch_count = 0
+            current_batch = []
+
+            # 使用tqdm显示整体进度
+            with tqdm(total=total_pins_with_images, desc=f"下载 {keyword}", unit="pin") as pbar:
+                # 更新已下载的进度
+                pbar.update(len(producer.downloaded_cache))
+
+                while True:
+                    try:
+                        # 从队列获取Pin，设置超时避免死锁
+                        pin = await asyncio.wait_for(queue.get(), timeout=1.0)
+                        current_batch.append(pin)
+
+                        # 当批次满了或者生产者完成时，处理当前批次
+                        if len(current_batch) >= self.batch_size or producer.finished:
+                            if current_batch:
+                                batch_results = await self._download_batch_concurrent(
+                                    current_batch, keyword, pbar
+                                )
+
+                                # 统计结果
+                                batch_downloaded = sum(1 for success, _ in batch_results if success)
+                                batch_failed = len(batch_results) - batch_downloaded
+
+                                stats['downloaded'] += batch_downloaded
+                                stats['failed'] += batch_failed
+                                stats['total_batches'] += 1
+                                batch_count += 1
+
+                                logger.debug(f"批次 {batch_count} 完成: {batch_downloaded}/{len(current_batch)} 成功")
+
+                                # 清空当前批次
+                                current_batch = []
+
+                        # 标记任务完成
+                        queue.task_done()
+
+                    except asyncio.TimeoutError:
+                        # 超时检查生产者是否完成
+                        if producer.finished and queue.empty():
+                            break
+                        continue
+                    except Exception as e:
+                        logger.error(f"处理Pin时出错: {e}")
+                        if current_batch:
+                            queue.task_done()
+                        continue
+
+            # 等待生产者完成
+            await producer_task
+
+            logger.info(f"关键词 {keyword} 批量下载完成: {stats['downloaded']} 成功, {stats['failed']} 失败, {stats['total_batches']} 批次")
+
+        except Exception as e:
+            logger.error(f"批量处理关键词 {keyword} 失败: {e}")
+            stats['failed'] += 1
+
+        return stats
+
+    async def _download_batch_concurrent(self, pins_batch: List[Dict], keyword: str, pbar: tqdm) -> List[Tuple[bool, str]]:
+        """并发下载单个批次的图片
+
+        Args:
+            pins_batch: Pin数据批次
+            keyword: 关键词
+            pbar: 进度条
+
+        Returns:
+            下载结果列表
+        """
+        async def download_with_semaphore(pin):
+            """带信号量控制的下载函数"""
+            async with self.semaphore:
+                return await self._download_single_pin_async(pin, keyword)
+
+        # 创建并发任务
+        tasks = [download_with_semaphore(pin) for pin in pins_batch]
+
+        # 执行并发下载
+        results = []
+        for coro in asyncio.as_completed(tasks):
+            try:
+                result = await coro
+                results.append(result)
+
+                # 更新进度条
+                pbar.update(1)
+
+            except Exception as e:
+                logger.error(f"批次下载任务异常: {e}")
+                results.append((False, f"下载异常: {e}"))
+                pbar.update(1)
+
+        return results
+
+    async def _download_single_pin_async(self, pin: Dict, keyword: str) -> Tuple[bool, str]:
+        """异步下载单个Pin的图片
+
+        Args:
+            pin: Pin数据
+            keyword: 关键词
+
+        Returns:
+            (是否成功, 消息)
+        """
+        pin_id = pin.get('id')
+        if not pin_id:
+            return False, "Pin ID为空"
+
+        try:
+            # 构建输出路径
+            images_dir = os.path.join(self.image_downloader.output_dir, keyword, "images")
+            output_path = os.path.join(images_dir, f"{pin_id}.jpg")
+
+            # 检查文件是否已存在且有效
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                return True, "文件已存在"
+
+            # 获取候选URL
+            candidate_urls = self.image_downloader._get_prioritized_urls(pin)
+            if not candidate_urls:
+                return False, "没有可用的图片URL"
+
+            # 在线程池中执行同步下载（重用现有的下载逻辑）
+            loop = asyncio.get_event_loop()
+            success, message = await loop.run_in_executor(
+                None,
+                self.image_downloader._download_image_with_fallback,
+                {
+                    'pin_id': pin_id,
+                    'candidate_urls': candidate_urls,
+                    'expected_path': output_path
+                }
+            )
+
+            return success, message
+
+        except Exception as e:
+            logger.error(f"异步下载Pin {pin_id} 失败: {e}")
+            return False, f"下载异常: {e}"

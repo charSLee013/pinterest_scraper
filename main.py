@@ -11,9 +11,14 @@ import argparse
 import sys
 import asyncio
 import signal
+import warnings
 
 from loguru import logger
 from src.core.pinterest_scraper import PinterestScraper
+
+# 屏蔽asyncio的Task警告
+warnings.filterwarnings("ignore", message=".*Task was destroyed but it is pending.*")
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="asyncio")
 
 
 def setup_signal_handlers():
@@ -27,6 +32,12 @@ def setup_signal_handlers():
 
         # 抛出KeyboardInterrupt以确保异常传播
         raise KeyboardInterrupt()
+
+    def force_exit_handler(signum, frame):
+        """强制退出处理器 - 第二次Ctrl+C直接退出"""
+        logger.warning("检测到强制退出信号，立即终止程序")
+        import os
+        os._exit(1)
 
     # 在Windows和Unix系统上设置信号处理
     if sys.platform != 'win32':
@@ -107,7 +118,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--max-concurrent", "--max-workers", "-j",
         type=int,
         default=15,
-        help="最大并发下载数 (默认: 15，范围: 1-65536)"
+        help="最大并发下载数 (默认: 15，范围: 1-65536)，批次大小自动等于并发数"
     )
 
     return parser
@@ -121,6 +132,17 @@ def validate_concurrent_value(value: int) -> int:
     elif value > 65536:
         logger.warning(f"并发数过大 ({value})，设置为65536")
         return 65536
+    return value
+
+
+def validate_batch_size(value: int) -> int:
+    """验证批次大小的有效性"""
+    if value < 10:
+        logger.warning(f"批次大小过小 ({value})，设置为10")
+        return 10
+    elif value > 500:
+        logger.warning(f"批次大小过大 ({value})，设置为500")
+        return 500
     return value
 
 
@@ -341,7 +363,9 @@ def main():
         return asyncio.run(async_main())
     except KeyboardInterrupt:
         logger.warning("用户中断操作")
-        return 1
+        # 强制退出，避免asyncio清理警告
+        import os
+        os._exit(1)
     finally:
         # 在Windows上显式清理事件循环以减少警告
         if sys.platform == 'win32':

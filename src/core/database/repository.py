@@ -282,12 +282,13 @@ class SQLiteRepository:
             logger.error(f"加载Pin数据失败: {e}")
             return []
 
-    def load_pins_with_images(self, query: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def load_pins_with_images(self, query: str, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
         """根据查询关键词加载有图片链接的Pin数据（按创建时间倒序）
 
         Args:
             query: 搜索关键词
             limit: 限制数量
+            offset: 偏移量
 
         Returns:
             有图片链接的Pin数据列表（从新到旧排序）
@@ -305,6 +306,8 @@ class SQLiteRepository:
                     )
                 ).order_by(desc(Pin.created_at))
 
+                if offset:
+                    query_obj = query_obj.offset(offset)
                 if limit:
                     query_obj = query_obj.limit(limit)
 
@@ -312,7 +315,7 @@ class SQLiteRepository:
 
                 # 转换为字典格式
                 result = [pin.to_dict() for pin in pins]
-                logger.debug(f"加载有图片Pin数据: {len(result)} 个，查询: {query}")
+                logger.debug(f"加载有图片Pin数据: {len(result)} 个，查询: {query}, offset: {offset}")
                 return result
 
         except Exception as e:
