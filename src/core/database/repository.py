@@ -107,6 +107,74 @@ class SQLiteRepository:
         # 只要有成功保存的Pin就返回True
         return result['successful_count'] > 0
 
+    def save_pins_and_get_new_ids(self, pins: List[Dict[str, Any]], query: str, session_id: Optional[str] = None) -> List[str]:
+        """保存Pin数据并返回新增的Pin ID列表
+
+        Args:
+            pins: Pin数据列表
+            query: 搜索关键词
+            session_id: 会话ID
+
+        Returns:
+            新增的Pin ID列表
+        """
+        if not pins:
+            return []
+
+        new_pin_ids = []
+
+        try:
+            with self._get_session() as session:
+                for pin_data in pins:
+                    pin_id = pin_data.get('id')
+                    if not pin_id:
+                        continue
+
+                    # 检查Pin是否已存在
+                    existing_pin = session.query(Pin).filter(Pin.id == pin_id).first()
+                    if existing_pin:
+                        continue  # 跳过已存在的Pin
+
+                    # 标准化Pin数据
+                    normalized_data = PinDataNormalizer.normalize(pin_data, query)
+                    if not normalized_data:
+                        continue
+
+                    # 创建新Pin记录
+                    pin_hash = hashlib.md5(json.dumps(normalized_data, sort_keys=True).encode()).hexdigest()
+
+                    new_pin = Pin(
+                        id=pin_id,
+                        hash=pin_hash,
+                        query=query,
+                        title=normalized_data.get('title', ''),
+                        description=normalized_data.get('description', ''),
+                        image_url=normalized_data.get('image_url', ''),
+                        largest_image_url=normalized_data.get('largest_image_url', ''),
+                        pin_url=normalized_data.get('pin_url', ''),
+                        board_name=normalized_data.get('board_name', ''),
+                        user_name=normalized_data.get('user_name', ''),
+                        save_count=normalized_data.get('save_count', 0),
+                        stats=json.dumps(normalized_data.get('stats', {})),
+                        raw_data=json.dumps(pin_data),
+                        session_id=session_id,
+                        created_at=datetime.utcnow(),
+                        updated_at=datetime.utcnow()
+                    )
+
+                    session.add(new_pin)
+                    new_pin_ids.append(pin_id)
+
+                    # 处理下载任务
+                    self._upsert_download_task(session, pin_id, pin_hash, normalized_data)
+
+                session.commit()
+
+        except Exception as e:
+            logger.error(f"保存Pin并获取新ID失败: {e}")
+
+        return new_pin_ids
+
     def save_pin_immediately(self, pin_data: Dict[str, Any], query: str, session_id: Optional[str] = None) -> bool:
         """立即保存单个Pin到数据库（原子化）
 
@@ -441,7 +509,83 @@ class SQLiteRepository:
         except Exception as e:
             logger.error(f"创建采集会话失败: {e}")
             return session_id
-    
+
+    def create_pin_expansion_session(
+        self,
+        start_pin_id: str,
+        target_count: int,
+        output_dir: str,
+        download_images: bool = True
+    ) -> str:
+        """创建Pin扩展会话
+
+        Args:
+            start_pin_id: 起始Pin ID
+            target_count: 目标采集数量
+            output_dir: 输出目录
+            download_images: 是否下载图片
+
+        Returns:
+            会话ID
+        """
+        session_id = str(uuid.uuid4())
+        query = f"pin_expansion_{start_pin_id}"
+
+        try:
+            with self._get_session() as session:
+                new_session = ScrapingSession(
+                    id=session_id,
+                    query=query,
+                    target_count=target_count,
+                    status='running',
+                    output_dir=output_dir,
+                    download_images=download_images
+                    # started_at has default=datetime.utcnow, no need to set explicitly
+                )
+                session.add(new_session)
+                session.commit()
+
+            logger.info(f"创建Pin扩展会话: {session_id} (起始Pin: {start_pin_id})")
+
+        except Exception as e:
+            logger.error(f"创建Pin扩展会话失败: {e}")
+
+        return session_id
+
+    def get_incomplete_pin_expansion_sessions(self, start_pin_id: str) -> List[Dict]:
+        """获取未完成的Pin扩展会话
+
+        Args:
+            start_pin_id: 起始Pin ID
+
+        Returns:
+            未完成会话列表
+        """
+        query = f"pin_expansion_{start_pin_id}"
+
+        try:
+            with self._get_session() as session:
+                incomplete_sessions = session.query(ScrapingSession).filter(
+                    and_(
+                        ScrapingSession.query == query,
+                        ScrapingSession.status.in_(['running', 'interrupted'])
+                    )
+                ).order_by(desc(ScrapingSession.started_at)).all()
+
+                return [
+                    {
+                        'id': s.id,
+                        'query': s.query,
+                        'target_count': s.target_count,
+                        'status': s.status,
+                        'started_at': s.started_at
+                    }
+                    for s in incomplete_sessions
+                ]
+        except Exception as e:
+            logger.error(f"获取Pin扩展会话失败: {e}")
+            return []
+
     def update_session_status(self, session_id: str, status: str, actual_count: Optional[int] = None, stats: Optional[Dict] = None):
         """更新会话状态
         

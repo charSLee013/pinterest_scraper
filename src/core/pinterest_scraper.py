@@ -99,6 +99,7 @@ class PinterestScraper:
         self,
         query: Optional[str] = None,
         url: Optional[str] = None,
+        pin_id: Optional[str] = None,
         count: int = 50
     ) -> List[Dict]:
         """统一的Pinterest数据采集接口
@@ -106,15 +107,22 @@ class PinterestScraper:
         Args:
             query: 搜索关键词
             url: Pinterest URL
+            pin_id: Pin ID起始点（Pin扩展模式）
             count: 目标数量
 
         Returns:
             采集到的Pin数据列表
         """
-        if not query and not url:
-            logger.error("必须提供query或url参数")
+        # 参数验证：必须提供其中一个数据源
+        if not query and not url and not pin_id:
+            logger.error("必须提供query、url或pin_id参数")
             return []
 
+        # Pin扩展模式
+        if pin_id:
+            return await self._scrape_pin_expansion_mode(pin_id, count)
+
+        # 关键词搜索模式（原有逻辑）
         logger.debug(f"开始Pinterest数据采集")
         logger.debug(f"参数: query={query}, url={url}, count={count}")
 
@@ -180,7 +188,8 @@ class PinterestScraper:
                 logger.info(f"✅ 数据库中已有 {len(cached_pins)} 个pins，满足目标 {count} 个，直接使用")
                 # 更新会话状态
                 self.repository.update_session_status(session_id, 'completed', len(cached_pins))
-                return await self._finalize_results(cached_pins[:count], work_dir, session_id)
+                # 关键词搜索模式：下载数据库中所有相关Pin的图片
+                return await self._finalize_keyword_search_results(work_name, work_dir, session_id, cached_pins[:count])
 
             # 计算实际需要采集的数量（增量采集）
             cached_count = len(cached_pins)
@@ -213,7 +222,8 @@ class PinterestScraper:
             # 更新会话状态
             self.repository.update_session_status(session_id, 'completed', len(final_pins))
 
-            return await self._finalize_results(final_pins, work_dir, session_id)
+            # 关键词搜索模式：下载数据库中所有相关Pin的图片
+            return await self._finalize_keyword_search_results(work_name, work_dir, session_id, final_pins)
 
         except KeyboardInterrupt:
             logger.warning("检测到用户中断，数据已实时保存到数据库...")
@@ -467,6 +477,217 @@ class PinterestScraper:
             logger.debug("Pinterest爬虫资源清理完成")
         except Exception as e:
             logger.error(f"关闭爬虫时发生错误: {e}")
+
+    async def _scrape_pin_expansion_mode(self, pin_id: str, count: int) -> List[Dict]:
+        """Pin扩展模式：从指定Pin ID开始深度扩展采集
+
+        Args:
+            pin_id: 起始Pin ID
+            count: 目标采集数量
+
+        Returns:
+            采集到的Pin数据列表
+        """
+        logger.info(f"🎯 Pin扩展模式：Pin {pin_id} → 目标 {count} 个相关Pin")
+
+        # 设置工作目录（Pin扩展专用）
+        work_name = f"pin_expansion_{pin_id}"
+        work_dirs = utils.setup_directories(self.output_dir, work_name, self.debug)
+        work_dir = work_dirs.get('term_root', work_dirs['root'])
+
+        # 获取进程锁
+        self.process_manager = ProcessManager(work_name, self.output_dir)
+        if not self.process_manager.acquire_lock():
+            logger.error(f"无法启动Pin扩展任务，检测到其他实例正在处理: {work_name}")
+            return []
+
+        try:
+            # 创建Pin扩展特定的repository
+            self.repository = SQLiteRepository(keyword=work_name, output_dir=self.output_dir)
+
+            # 创建Pin扩展特定的下载管理器
+            self.download_manager = DownloadTaskManager(
+                keyword=work_name,
+                output_dir=self.output_dir,
+                max_concurrent=self.max_concurrent,
+                auto_start=False,
+                prefer_requests=self.prefer_requests
+            )
+            if self.proxy:
+                self.download_manager.downloader.proxy = self.proxy
+
+            # 检查是否有未完成的Pin扩展会话
+            session_id = await self._check_and_resume_pin_expansion_session(pin_id, count, work_dir)
+
+            if not session_id:
+                # 创建新的Pin扩展会话
+                session_id = self.repository.create_pin_expansion_session(
+                    start_pin_id=pin_id,
+                    target_count=count,
+                    output_dir=work_dir,
+                    download_images=self.download_images
+                )
+
+            # 执行Pin扩展采集
+            pins = await self.scraper.scrape_from_pin_id(
+                start_pin_id=pin_id,
+                target_count=count,
+                repository=self.repository,
+                session_id=session_id
+            )
+
+            if pins:
+                # 更新会话状态
+                self.repository.update_session_status(session_id, 'completed', len(pins))
+
+                # Pin扩展模式：下载数据库中所有相关Pin的图片（类似--only-images逻辑）
+                return await self._finalize_pin_expansion_results(work_name, work_dir, session_id)
+            else:
+                logger.warning("Pin扩展采集未获取到数据")
+                self.repository.update_session_status(session_id, 'failed', 0)
+                return []
+
+        except KeyboardInterrupt:
+            logger.warning("Pin扩展采集被用户中断")
+            if hasattr(self, 'repository') and self.repository and 'session_id' in locals():
+                saved_count = len(self.repository.load_pins_by_query(work_name))
+                self.repository.update_session_status(session_id, 'interrupted', saved_count)
+            raise
+        except Exception as e:
+            logger.error(f"Pin扩展采集出错: {e}")
+            if hasattr(self, 'repository') and self.repository and 'session_id' in locals():
+                self.repository.update_session_status(session_id, 'failed', 0)
+            raise
+        finally:
+            if self.process_manager:
+                self.process_manager.release_lock()
+
+    async def _check_and_resume_pin_expansion_session(self, pin_id: str, count: int, work_dir: str) -> Optional[str]:
+        """检查并恢复Pin扩展会话"""
+        try:
+            incomplete_sessions = self.repository.get_incomplete_pin_expansion_sessions(pin_id)
+            if incomplete_sessions:
+                session = incomplete_sessions[0]
+                saved_count = len(self.repository.load_pins_by_query(f"pin_expansion_{pin_id}"))
+
+                logger.info(f"🔄 发现未完成的Pin扩展会话")
+                logger.info(f"   起始Pin: {pin_id}")
+                logger.info(f"   已采集: {saved_count} 个Pin")
+                logger.info(f"   目标数量: {count} 个Pin")
+                logger.info(f"   进度: {saved_count}/{count} ({saved_count/count*100:.1f}%)")
+
+                if saved_count >= count:
+                    logger.info("✅ 已达到目标数量，无需继续采集")
+                    self.repository.update_session_status(session['id'], 'completed', saved_count)
+                    return None
+
+                # 简化：自动继续，不询问用户
+                logger.info(f"🔄 自动继续Pin扩展会话，还需采集 {count - saved_count} 个Pin")
+                return session['id']
+        except Exception as e:
+            logger.debug(f"检查Pin扩展会话时出错: {e}")
+
+        return None
+
+    async def _finalize_pin_expansion_results(self, work_name: str, work_dir: str, session_id: str) -> List[Dict]:
+        """完成Pin扩展结果处理：下载数据库中所有相关Pin的图片
+
+        Pin扩展模式应该像--only-images一样，下载数据库中所有相关Pin的图片，
+        而不仅仅是本次新采集的Pin。
+
+        Args:
+            work_name: 工作名称（如pin_expansion_5488830791529113）
+            work_dir: 工作目录
+            session_id: 会话ID
+
+        Returns:
+            数据库中所有相关Pin的列表
+        """
+        try:
+            # 从数据库加载所有相关Pin
+            all_pins = self.repository.load_pins_by_query(work_name, limit=None)
+
+            if not all_pins:
+                logger.warning("数据库中没有找到相关Pin数据")
+                return []
+
+            logger.info(f"📊 数据库中共有 {len(all_pins)} 个相关Pin")
+
+            # 保存JSON数据（包含所有Pin）
+            self._save_pins_json(all_pins, work_dir)
+
+            # 调度异步图片下载（如果启用）- 下载所有Pin的图片
+            if self.download_images:
+                pins_with_images = [pin for pin in all_pins if pin.get('largest_image_url')]
+                logger.info(f"准备下载: {len(pins_with_images)}/{len(all_pins)} 个Pin有图片URL")
+
+                if pins_with_images:
+                    await self._schedule_async_downloads(all_pins, work_dir)
+                else:
+                    logger.warning("没有Pin包含图片URL，跳过下载")
+
+            # 输出统计信息
+            self._log_simple_stats(all_pins)
+
+            return all_pins
+
+        except Exception as e:
+            logger.error(f"完成Pin扩展结果处理失败: {e}")
+            # 降级到基础处理
+            return []
+
+    async def _finalize_keyword_search_results(self, work_name: str, work_dir: str, session_id: str, result_pins: List[Dict]) -> List[Dict]:
+        """完成关键词搜索结果处理：下载数据库中所有相关Pin的图片
+
+        关键词搜索模式也应该下载数据库中所有相关Pin的图片，
+        而不仅仅是返回的结果Pin，这样与Pin扩展模式保持一致。
+
+        Args:
+            work_name: 工作名称（关键词）
+            work_dir: 工作目录
+            session_id: 会话ID
+            result_pins: 要返回给用户的Pin列表
+
+        Returns:
+            返回给用户的Pin列表（但下载所有相关Pin的图片）
+        """
+        try:
+            # 保存JSON数据（返回的结果Pin）
+            self._save_pins_json(result_pins, work_dir)
+
+            # 调度异步图片下载（如果启用）- 下载数据库中所有相关Pin的图片
+            if self.download_images:
+                # 从数据库加载所有相关Pin（用于下载）
+                all_pins = self.repository.load_pins_by_query(work_name, limit=None)
+
+                if all_pins:
+                    pins_with_images = [pin for pin in all_pins if pin.get('largest_image_url')]
+                    logger.info(f"准备下载: {len(pins_with_images)}/{len(all_pins)} 个Pin有图片URL（数据库中所有相关Pin）")
+
+                    if pins_with_images:
+                        await self._schedule_async_downloads(all_pins, work_dir)
+                    else:
+                        logger.warning("数据库中没有Pin包含图片URL，跳过下载")
+                else:
+                    logger.warning("数据库中没有找到相关Pin，跳过下载")
+
+            # 输出统计信息（基于返回的结果）
+            self._log_simple_stats(result_pins)
+
+            return result_pins
+
+        except Exception as e:
+            logger.error(f"完成关键词搜索结果处理失败: {e}")
+            # 降级到基础处理
+            await self._finalize_results(result_pins, work_dir, session_id)
+            return result_pins
+
+    def get_stats(self) -> Dict:
+        """获取统计信息"""
+        stats = {}
+        if self.download_manager:
+            stats['download_stats'] = self.download_manager.get_download_stats()
+        return stats
 
     def __del__(self):
         """析构函数，确保资源清理"""

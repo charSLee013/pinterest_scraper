@@ -146,7 +146,14 @@ class AsyncImageDownloader:
         for i in range(self.max_concurrent):
             worker = asyncio.create_task(self._download_worker(f"worker-{i}"))
             self.workers.append(worker)
-        
+
+        # 处理启动前积累的pending tasks
+        if hasattr(self, '_pending_tasks') and self._pending_tasks:
+            logger.info(f"处理 {len(self._pending_tasks)} 个待处理任务")
+            for task_data in self._pending_tasks:
+                await self.download_queue.put(task_data)
+            self._pending_tasks.clear()
+
         logger.info(f"异步下载器启动完成，{self.max_concurrent} 个工作协程")
 
     async def _initialize_browser_session(self):
@@ -345,8 +352,20 @@ class AsyncImageDownloader:
             # 使用一个较大的默认值，后续会根据实际任务数调整
             self._init_progress_bar(1)
 
-        # 将任务添加到队列
-        asyncio.create_task(self.download_queue.put(task_data))
+        # 将任务添加到队列 - 使用线程安全的方式
+        try:
+            # 获取当前事件循环
+            loop = asyncio.get_running_loop()
+            # 在事件循环中调度任务
+            loop.create_task(self.download_queue.put(task_data))
+        except RuntimeError:
+            # 如果没有运行的事件循环，使用同步方式
+            logger.warning("没有运行的事件循环，使用同步方式调度任务")
+            # 这种情况下，我们需要将任务存储起来，等待异步处理
+            if not hasattr(self, '_pending_tasks'):
+                self._pending_tasks = []
+            self._pending_tasks.append(task_data)
+
         self.stats['total_tasks'] += 1
 
         # 如果进度条存在，更新总数

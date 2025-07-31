@@ -55,25 +55,33 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
+  # 关键词搜索模式（阶段1+阶段2混合策略）
   python main.py --query "nature photography" --count 100
-  python main.py --url "https://www.pinterest.com/pinterest/" --count 50
-  python main.py --query "landscape" --count 2000 --max-concurrent 30
-  python main.py --query "cats" --count 100 --no-images  # 仅采集数据，不下载图片
+  python main.py -q "landscape" --count 2000 --max-concurrent 30
+  python main.py -q "cats" --count 100 --no-images  # 仅采集数据，不下载图片
+
+  # Pin扩展模式（纯阶段2深度扩展）
+  python main.py --pin-id "123456789" --count 1000
+  python main.py -p "123456789" --count 500 --max-concurrent 20
+
+  # 优先级：-q > -p（同时提供时以关键词为准）
+  python main.py -q "cats" -p "123456789" --count 100  # 使用关键词搜索
+
+  # 仅下载图片模式
   python main.py --only-images --query "cats"  # 仅下载cats关键词的缺失图片
   python main.py --only-images --max-concurrent 100  # 下载所有关键词，高并发
   python main.py --only-images -j 5  # 下载所有关键词，低并发（网络慢时）
         """
     )
 
-    # 数据源参数（互斥，但--only-images模式下可选）
-    source_group = parser.add_mutually_exclusive_group(required=False)
-    source_group.add_argument(
+    # 数据源参数（非互斥，通过优先级处理）
+    parser.add_argument(
         "-q", "--query",
-        help="Pinterest搜索关键词"
+        help="Pinterest搜索关键词（优先级最高）"
     )
-    source_group.add_argument(
-        "-u", "--url",
-        help="Pinterest URL"
+    parser.add_argument(
+        "-p", "--pin-id",
+        help="Pinterest Pin ID起始点（直接扩展模式）"
     )
 
     # 核心参数
@@ -146,6 +154,52 @@ def validate_batch_size(value: int) -> int:
     return value
 
 
+def validate_pin_id(pin_id: str) -> bool:
+    """验证Pin ID的有效性"""
+    if not pin_id:
+        return False
+    if not pin_id.isdigit():
+        return False
+    if len(pin_id) < 10 or len(pin_id) > 20:  # Pinterest Pin ID长度范围
+        return False
+    return True
+
+
+def validate_and_prioritize_args(args):
+    """参数验证和优先级处理"""
+
+    # --only-images模式的特殊处理
+    if args.only_images:
+        if args.pin_id:
+            logger.error("--only-images 模式下不支持 --pin-id 参数")
+            return None
+        # --only-images模式下，--query是可选的
+        return args
+
+    # 普通模式：优先级处理
+    if args.query:
+        # 有关键词：使用关键词搜索模式
+        if args.pin_id:
+            logger.warning("同时提供了-q和-p参数，以-q关键词搜索为准，忽略Pin ID")
+        args.mode = "keyword_search"
+        args.effective_source = args.query
+
+    elif args.pin_id:
+        # 只有Pin ID：使用Pin扩展模式
+        if not validate_pin_id(args.pin_id):
+            logger.error(f"无效的Pin ID: {args.pin_id}（必须是10-20位数字）")
+            return None
+        args.mode = "pin_expansion"
+        args.effective_source = args.pin_id
+
+    else:
+        # 都没有：错误
+        logger.error("必须提供 -q/--query 或 -p/--pin-id 参数")
+        return None
+
+    return args
+
+
 def setup_logger(debug: bool = False, verbose: bool = False):
     """设置三层日志配置
 
@@ -174,19 +228,15 @@ async def async_main():
     parser = create_parser()
     args = parser.parse_args()
 
-    # 参数验证
+    # 参数验证和优先级处理
+    args = validate_and_prioritize_args(args)
+    if args is None:
+        return 1
+
+    # --only-images模式的额外验证
     if args.only_images:
-        # --only-images模式下，不需要--query或--url
         if args.no_images:
             logger.error("--only-images 和 --no-images 不能同时使用")
-            return 1
-        if args.url:
-            logger.error("--only-images 模式下不支持 --url 参数")
-            return 1
-    else:
-        # 普通模式下，必须提供--query或--url
-        if not args.query and not args.url:
-            logger.error("必须提供 --query 或 --url 参数（除非使用 --only-images 模式）")
             return 1
 
     # 设置日志
@@ -279,12 +329,19 @@ async def async_main():
             max_concurrent=max_concurrent
         )
 
-        # 执行智能采集
-        pins = await scraper.scrape(
-            query=args.query,
-            url=args.url,
-            count=args.count
-        )
+        # 执行智能采集 - 支持Pin ID模式
+        if hasattr(args, 'mode') and args.mode == "pin_expansion":
+            # Pin扩展模式
+            pins = await scraper.scrape(
+                pin_id=args.pin_id,
+                count=args.count
+            )
+        else:
+            # 关键词搜索模式（保持向后兼容）
+            pins = await scraper.scrape(
+                query=args.query,
+                count=args.count
+            )
 
         # 输出结果
         if pins:

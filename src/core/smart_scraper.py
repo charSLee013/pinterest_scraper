@@ -213,6 +213,51 @@ class SmartScraper:
 
         return final_pins
 
+    async def scrape_from_pin_id(
+        self,
+        start_pin_id: str,
+        target_count: int,
+        repository=None,
+        session_id: Optional[str] = None
+    ) -> List[Dict]:
+        """基于Pin ID的扩展采集 - 纯阶段2模式
+
+        Args:
+            start_pin_id: 起始Pin ID
+            target_count: 目标采集数量
+            repository: Repository实例，用于实时保存
+            session_id: 会话ID，用于会话追踪
+
+        Returns:
+            采集到的Pin数据列表
+        """
+        # 更新实时保存参数
+        if repository is not None:
+            self.repository = repository
+        if session_id is not None:
+            self.session_id = session_id
+
+        query = f"pin_expansion_{start_pin_id}"  # 用于数据库查询的标识
+
+        if self.repository:
+            logger.info("💾 启用实时保存模式")
+
+        # 记录采集开始时的基准数量
+        self._baseline_count = self._get_saved_count_from_db(query) if self.repository else 0
+        logger.debug(f"📊 采集基准: 数据库中已有 {self._baseline_count} 个Pin")
+
+        # 重置状态
+        self._reset_state()
+        self._baseline_count = self._get_saved_count_from_db(query) if self.repository else 0
+
+        try:
+            # 执行纯阶段2的Pin扩展采集
+            return await self._pin_expansion_scrape_with_dedup(start_pin_id, query, target_count)
+        except KeyboardInterrupt:
+            logger.warning("检测到用户中断，保存已采集数据...")
+            await self._handle_interrupt(query)
+            raise
+
     def _estimate_dedup_rate(self, collected_pins: List[Dict], round_num: int) -> float:
         """估算去重率，用于调整采集目标
 
@@ -493,6 +538,208 @@ class SmartScraper:
         logger.info(f"💾 实际保存统计: {actual_saved} 个Pin已保存到数据库")
 
         # 返回实际采集到的所有Pin，不截断
+        return all_pins
+
+    async def _pin_expansion_scrape_with_dedup(
+        self,
+        start_pin_id: str,
+        query: str,
+        target_count: int
+    ) -> List[Dict]:
+        """Pin扩展采集，基于数据库的实时去重直到达到目标数量
+
+        Args:
+            start_pin_id: 起始Pin ID
+            query: 查询标识（用于数据库）
+            target_count: 目标去重后数量
+
+        Returns:
+            去重后的Pin数据列表（从数据库加载）
+        """
+        max_rounds = 10  # Pin扩展模式的最大采集轮次
+
+        for round_num in range(max_rounds):
+            # 检查中断请求
+            if self._interrupt_requested:
+                logger.info("检测到中断请求，停止采集")
+                break
+
+            # 从数据库获取当前已保存的Pin数量
+            current_total_count = self._get_saved_count_from_db(query)
+            current_new_count = current_total_count - self._baseline_count
+            remaining_needed = target_count - current_new_count
+
+            logger.debug(f"🔢 Pin扩展状态: 总数={current_total_count}, 基准={self._baseline_count}, 新增={current_new_count}, 目标={target_count}, 还需={remaining_needed}")
+
+            if remaining_needed <= 0:
+                logger.info(f"✅ 已达到目标数量 {target_count}")
+                break
+
+            logger.debug(f"第 {round_num + 1} 轮扩展：总数 {current_total_count}，还需 {remaining_needed}")
+
+            # 执行纯阶段2扩展
+            if round_num == 0:
+                # 第一轮：从起始Pin ID开始
+                new_pins = await self._pure_stage2_expansion(start_pin_id, query, remaining_needed)
+            else:
+                # 后续轮次：从数据库中的Pin继续扩展
+                new_pins = await self._continue_stage2_expansion(query, remaining_needed)
+
+            if not new_pins:
+                logger.debug(f"第 {round_num + 1} 轮无新数据，停止扩展")
+                break
+
+            logger.info(f"第 {round_num + 1} 轮采集: {len(new_pins)} 个Pin")
+
+            # 重新检查数据库中的新增数量
+            current_total_count = self._get_saved_count_from_db(query)
+            current_new_count = current_total_count - self._baseline_count
+            if current_new_count >= target_count:
+                logger.info(f"✅ 提前达到目标数量")
+                break
+
+        # 从数据库加载最终结果
+        all_pins = self._load_pins_from_db(query, None)
+        final_pins = all_pins[-target_count:] if len(all_pins) >= target_count else all_pins
+        final_count = len(final_pins)
+        logger.info(f"📊 Pin扩展完成: {final_count}/{target_count} 个Pin")
+
+        return final_pins
+
+    async def _pure_stage2_expansion(self, start_pin_id: str, query: str, target_count: int) -> List[Dict]:
+        """纯阶段2扩展：从起始Pin ID开始的深度扩展
+
+        Args:
+            start_pin_id: 起始Pin ID
+            query: 查询标识
+            target_count: 目标数量
+
+        Returns:
+            采集到的Pin数据列表
+        """
+        # 初始化Pin集合
+        pin_set = {start_pin_id}
+        all_pins = []
+        no_new_data_streak = 0
+        max_no_new_data_streak = 30
+
+        # 创建进度条
+        pbar = tqdm(total=target_count, desc="Pin扩展", unit="pins", leave=False)
+
+        try:
+            while pin_set and len(all_pins) < target_count and no_new_data_streak < max_no_new_data_streak:
+                # 检查中断请求
+                if self._interrupt_requested:
+                    logger.info("检测到中断请求，停止Pin扩展")
+                    break
+
+                # 从集合中取一个Pin ID
+                pin_id = pin_set.pop()
+                remaining_count = target_count - len(all_pins)
+
+                # 获取相关推荐Pin
+                related_pins = await self._scrape_pin_detail_with_queue(pin_id, remaining_count)
+
+                if related_pins:
+                    # 实时保存到数据库并获取新Pin ID
+                    if self.repository and query:
+                        new_pin_ids = self.repository.save_pins_and_get_new_ids(related_pins, query, self.session_id)
+
+                        # 将新Pin ID加入集合
+                        for new_pin_id in new_pin_ids:
+                            pin_set.add(new_pin_id)
+
+                        # 更新统计
+                        all_pins.extend(related_pins)
+                        pbar.update(len(related_pins))
+
+                        if new_pin_ids:
+                            no_new_data_streak = 0
+                        else:
+                            no_new_data_streak += 1
+                    else:
+                        # 降级到内存模式
+                        all_pins.extend(related_pins)
+                        pbar.update(len(related_pins))
+                        no_new_data_streak = 0
+
+                    pbar.set_postfix({
+                        'set大小': len(pin_set),
+                        '无新数据': no_new_data_streak,
+                        '当前Pin': pin_id[:15] + '...' if len(pin_id) > 15 else pin_id
+                    })
+                else:
+                    no_new_data_streak += 1
+
+                # 检查停止条件
+                if len(all_pins) >= target_count:
+                    break
+                if no_new_data_streak >= max_no_new_data_streak:
+                    break
+                if not pin_set:
+                    break
+
+        finally:
+            pbar.close()
+
+        return all_pins
+
+    async def _continue_stage2_expansion(self, query: str, target_count: int) -> List[Dict]:
+        """继续阶段2扩展：从数据库中的Pin继续扩展
+
+        Args:
+            query: 查询标识
+            target_count: 目标数量
+
+        Returns:
+            采集到的Pin数据列表
+        """
+        # 从数据库加载有图片的Pin作为扩展源
+        pins_with_images = self.repository.load_pins_with_images(query) if self.repository else []
+        if not pins_with_images:
+            return []
+
+        pin_set = set([pin['id'] for pin in pins_with_images[-50:]])  # 取最新的50个Pin作为扩展源
+
+        # 复用纯阶段2扩展逻辑
+        all_pins = []
+        no_new_data_streak = 0
+        max_no_new_data_streak = 20  # 继续扩展时降低阈值
+
+        pbar = tqdm(total=target_count, desc="继续扩展", unit="pins", leave=False)
+
+        try:
+            while pin_set and len(all_pins) < target_count and no_new_data_streak < max_no_new_data_streak:
+                if self._interrupt_requested:
+                    break
+
+                pin_id = pin_set.pop()
+                remaining_count = target_count - len(all_pins)
+
+                related_pins = await self._scrape_pin_detail_with_queue(pin_id, remaining_count)
+
+                if related_pins and self.repository:
+                    new_pin_ids = self.repository.save_pins_and_get_new_ids(related_pins, query, self.session_id)
+
+                    for new_pin_id in new_pin_ids:
+                        pin_set.add(new_pin_id)
+
+                    all_pins.extend(related_pins)
+                    pbar.update(len(related_pins))
+
+                    if new_pin_ids:
+                        no_new_data_streak = 0
+                    else:
+                        no_new_data_streak += 1
+                else:
+                    no_new_data_streak += 1
+
+                if len(all_pins) >= target_count or no_new_data_streak >= max_no_new_data_streak:
+                    break
+
+        finally:
+            pbar.close()
+
         return all_pins
 
     async def _scrape_pin_detail_with_queue(self, pin_id: str, max_count: int = 50) -> List[Dict]:
